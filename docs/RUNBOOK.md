@@ -3,6 +3,7 @@
 The owner's step-by-step procedure for a manual console test sweep: it turns the PLAN section 14 matrix into runs that each end in one complete `docs/TEST-RESULTS.md` entry (PLAN 14.2).
 
 - PLAN section references explain the experiment. Helper scripts and the current workflow define exact commands; recovered line numbers are historical and may have moved. Nothing here is a measurement.
+- Pending comparisons use the instrumented control at `22086e9`, package `1.18.19.0`, CI run `34979936943`. Its local deployment summary records a credential-gated skip, so install and verify it before measuring. Keep the same instrumentation in each treatment.
 - Shell for every command: PowerShell 7 (`xbox-deploy.ps1`; `-SkipCertificateCheck` needs it, PLAN 3.13).
 - Never print, paste, or commit anything from `C:\Users\ygordreyer\.xbox-deploy\` (PLAN 16 rule 20; PLAN 7.5). Naming the path is fine.
 
@@ -16,7 +17,7 @@ The owner's step-by-step procedure for a manual console test sweep: it turns the
 Test-Path C:\Users\ygordreyer\.xbox-deploy\credentials.json   # expect True; never Get-Content this file (PLAN 16 rule 20)
 ```
 
-- [ ] `consoleAddress` in that file is the full portal base URL `https://192.168.18.20:11443` (PLAN 3.11), the shape the script documents and uses unchanged as the request base (`xbox-deploy.ps1`, `:244`, `:271`). Gate 1's example shows a bare IP (PLAN 17 Gate 1 step 3); the script would send that as-is, so use the full URL.
+- [ ] `consoleAddress` in that file is the full portal base URL `https://192.168.18.20:11443` (PLAN 3.11), matching the helper's request-base format.
 - [ ] The runner is online (PLAN 7.2):
 
 ```powershell
@@ -79,13 +80,13 @@ The standard sweep per experiment branch is rows A, B, C (PLAN 14.1). Extra rows
 | E | Row A with the Dev Home VRR toggle flipped | closed | Same as A | • Whether anything reaches the app<br>• the toggle's reach is UNCONFIRMED | • Same as A<br>• TV readout photo | • PLAN 8 Phase 2d<br>• PLAN 3.19 |
 | F | Row A with host `hdrBrightnessMode` manual 1690, one run only, restore 1000 afterwards | closed | Same as A | Whether the clipping point moves with the host's configured maximum | • Clipping onset<br>• record which value was active | PLAN 12 |
 | G | • 4K120 or 1080p120, content whose frame rate sits between fixed refresh rates (PLAN names 118, 112, 104, 117, 119 FPS)<br>• PLAN names no content, record what was used | closed | That content | TV refresh readout follows the stream rate rather than pinning at 120 | • Photograph of the TV's own readout per run<br>• on `experiment/vrr-allow-tearing` four runs, VRR on and off in App and Game | • PLAN 14.4<br>• PLAN 10 steps 4 and 5 |
-| H | Host at 60, 90, 120 FPS, App and Game, 5 minute stream, same content as the `main` fixes-only control | closed | Same content as the control run | Sustained queue depth growth or none | Full pacing receipt fields from section 4, including maxima and actual window durations | • PLAN 11 measurement<br>• PLAN 14.5<br>• PLAN 16 rule 10 |
+| H | Host at 60, 90, 120 FPS, App and Game, 5 minute stream, same content as the instrumented control | closed | Same content as the control run | Sustained queue depth growth or none | Full pacing receipt fields from section 4, including maxima and actual window durations | • PLAN 11 measurement<br>• PLAN 14.5<br>• PLAN 16 rule 10 |
 | I | Row A with a second Moonlight client on the same host and TV | closed | Same as A | Side-by-side match | Photo of both | PLAN 14.3 item 9 |
 
 ### 3.2 Steps for one run
 
 1. Open the entry for this run in `docs/TEST-RESULTS.md` (section 4) and fill the header and the section 2 lines before touching the console (PLAN 16 rule 4, rule 24).
-2. Confirm the app is running. The deploy job launched it (`msbuild.yml`; `xbox-deploy.ps1`). Relaunch from the console with the controller, or from the PC with the task manager call. POST needs the CSRF header unless the username starts with `auto-` (PLAN 3.13; PLAN 18.4); with another username, rerun the deploy job instead of hand-rolling the header.
+2. Confirm the app is running after a verified deployment with `launched: true`. A skipped deploy has not installed or launched it. Relaunch from the console with the controller, or from the PC with the task manager call. POST needs the CSRF header unless the username starts with `auto-` (PLAN 3.13; PLAN 18.4); with another username, rerun the deploy job instead of hand-rolling the header.
 
    ```powershell
    $aumidB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$($pkg.PackageFamilyName)!App"))   # xbox-deploy.ps1:471
@@ -104,7 +105,7 @@ The standard sweep per experiment branch is rows A, B, C (PLAN 14.1). Extra rows
 
 ### 3.3 Pull the log files after the run
 
-- The file logger is Phase 1 work: `LocalState\logs\moonlight-<yyyyMMdd-HHmmss>.log`, newest 10 kept (PLAN 8 Phase 1a). A build without it (`main` at the fixes-only commit, the baseline) has no file to pull (PLAN 3.8): write "no file logger on this build" under Untested and quote the on-screen log overlay (PLAN 3.7) if it was read.
+- The instrumented control writes `LocalState\logs\moonlight-<yyyyMMdd-HHmmss>.log`, newest 10 kept. The older fixes-only `main` has no file logger; if testing that historical build, record this limitation rather than expecting trace files.
 - Use `tools/xbox-logs.ps1` to list and pull the logger folder. Run its help for current parameters.
 - Expected logger directory is `\LocalState\logs` under WDP `knownfolderid=LocalAppData`. The alternate `\logs` path in old plan snippets is unverified. Record the actual successful listing before treating either as a console fact.
 - Preserve relative paths and retrieval summaries. Do not paste credential objects or request headers into the result entry.

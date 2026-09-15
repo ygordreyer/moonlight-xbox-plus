@@ -12,6 +12,7 @@
 - Known build baseline: `main` at `628d8e0`, verified on 2026-09-15. Run `34971495347` built successfully; deployment skipped because Device Portal credentials were absent.
 - Owner decision, 2026-09-15: builds run permanently on this Windows PC. GitHub-hosted minutes and GitHub artifact storage are not prerequisites.
 - Continuation integration lives on `topic/moonlight-xbox`. Recovered experiments remain isolated until reviewed and measured.
+- Current instrumented control: `22086e9`, signed package `1.18.19.0`, CI run `34979936943`. Its application source matches `85a3d4d`; the later commit changes documentation only. Use this control for pending trace comparisons. Historical references to the fixes-only `main` describe the older build without file telemetry.
 - One runner is online: `ygor-desktop-xbox-lan`. Real logon startup and console installation remain unverified.
 - Signing secrets are configured. Never read or print their values.
 - The recovered workload includes completed local commits, partial pacing source and research-only bitrate/composition lanes. A terminal session-limit notice does not prove a lane wrote nothing.
@@ -334,7 +335,7 @@ H1 and H2 are cheap and are tested first, in one instrumentation pass. H3 is the
 18. `feature/vplus-pacer`
 19. `feature/dynamic-bitrate`
 
-Fourteen of these (items 6 through 19) are the experiment and feature branches an agent creates; the console baseline build is `main` at the fixes-only commit, recorded in `docs/TEST-RESULTS.md` as "baseline".
+Fourteen of these (items 6 through 19) identify the historical experiment and feature lanes. The current console baseline is the instrumented control named in section 0, recorded in `docs/TEST-RESULTS.md` as "baseline". The continuation preserves isolated treatments as patches against that control.
 
 ### Branch rules
 
@@ -343,7 +344,7 @@ Fourteen of these (items 6 through 19) are the experiment and feature branches a
 - Every branch carries `docs/experiments/<branch-leaf>.md` written before the first commit on it: the hypothesis it tests, the exact code change, the expected result if the hypothesis holds, the expected result if it does not, and the measurement that separates them.
 - Every branch must build. A branch that does not build is not an experiment, it is a work in progress, and it does not get deployed.
 - `docs/PLAN.md` (this file) lives on `main` and is the only file this planning pass writes.
-- The control for pacing and drop-count comparisons is the `main` fixes-only build (untouched by any experiment), not `baseline/upstream`, because `main` is what the CI and deploy lanes actually produce and what every experiment branches from; `baseline/upstream` stays the pre-fork reference (rule 10, section 16).
+- Pacing and drop-count comparisons use the instrumented control in section 0. Keep its tracing identical in each treatment. `baseline/upstream` remains the pre-fork reference (rule 10, section 16).
 
 ### Layout additions this plan introduces
 
@@ -477,7 +478,7 @@ Goal: a commit on any branch produces a signed, versioned artifact and lands on 
 - `moonlight-xbox-dx.vcxproj:139` `PackageCertificateThumbprint` was changed from upstream's `609C6A553DA6A00199D49BF8231E048743D5DD80` to the fork's stable self-signed thumbprint `2FE3549ACE299557AACC02A3D36C996B544EF901`, as part of the fixes-only commit named in section 0.
 - `tools/xbox-deploy.ps1` exists (section 7.3), including the exit-0 credential gate so the pipeline stays green while the portal credentials are missing.
 - The 14 experiment and feature branches (section 5) are created from `main` (pending; section 0 next steps), not from `baseline/upstream`: each carries its `docs/experiments/<name>.md` stub and an empty `docs/TEST-RESULTS.md`.
-- The fixes-only `main` is the rendering control. Build infrastructure changes may be carried onto an experiment without combining rendering treatments. `baseline/upstream` remains comparison-only.
+- The instrumented build in section 0 is the rendering control. Build infrastructure changes may be carried onto an experiment without combining rendering treatments. `baseline/upstream` remains comparison-only.
 - The local `ATGEnsureShaders` failure is resolved: clearing `NoDefaultCurrentDirectoryInExePath` fixed it (section 6.3). No further action here.
 - Machinery exit criterion: trusted push or dispatch produces a signed local handoff and durable deploy summary. A credential skip validates only the skip path; successful console installation requires its own receipt.
 
@@ -637,7 +638,7 @@ From `FramePacingController.kt`, the algorithm only. The Kotlin and MediaCodec s
 ### Measurement, which comes before any change
 
 - Add a pacing trace with per-window `win_ms`, new-frame Present-start interval mean, p99, max and `n`; repeats, misses, drops, queue mean/max and measured vblank interval. It flushes after a Present or a no-frame iteration, plus once at shutdown. These are Present-call start intervals, not scanout times or Present duration.
-- Establish the baseline on `main` at the fixes-only commit, untouched by any pacing experiment, before touching `Pacer.cpp` (section 5's branch rules, section 16 rule 10).
+- Establish measurements on the instrumented control named in section 0 before any pacing-algorithm treatment. The control preserves frame selection and presentation behavior; tracing itself adds overhead, so both sides of a comparison need the same instrumentation.
 - Test at 60, 90, 120 FPS host settings (the host's configured fps list is `[59.94, 60, 90, 120, 144]`), and in both App and Game resource mode, because phase 2c may show that pacing is partly a resource problem.
 - Branch `feature/vplus-pacer`. Compare matched 5-minute runs as collections of windows: maximum interval, number of windows above a predefined interval threshold, repeats, misses, drops normalized by actual elapsed time, and queue growth. Do not average per-window p99 values into a five-minute p99. Flag empty windows, sample overflow, and missing logs. An impression of smoothness is not a result.
 
@@ -749,7 +750,7 @@ The "Untested in this run" block is mandatory and must not be empty. A run alway
 
 - Compare matched 5-minute runs by each window's mean, p99, max, `n`, `win_ms`, repeats and misses. At 60 samples nearest-rank p99 is the maximum; at 120 it excludes one worst sample, so neither is a five-minute p99.
 - No sustained queue growth and no increase in affected windows above the predefined interval threshold.
-- Drops per actual elapsed time, repeats, and misses are not worse than `main`; flag empty windows, overflow, or missing logs.
+- Drops per actual elapsed time, repeats, and misses are not worse than the matched instrumented control; flag empty windows, overflow, or missing logs.
 - Accept a pacing treatment only with a measured improvement in interval maxima, affected-window count or drop rate, while meeting the no-regression checks above. Choose the interval threshold before either comparison run.
 - A `Present(1, 0)` experiment needs duration telemetry before it can claim causal blocking. Existing interval telemetry can still compare outcomes.
 
@@ -762,7 +763,7 @@ v0 section 28's 11 items, corrected against the evidence. Corrections are marked
 1. Build lane on the fork, including the fork certificate step. *Corrected: v0 assumed the inherited workflow would build on the fork; it cannot, because neither cert step fires.*
 2. Deploy lane over the Device Portal, with the credential gate exiting 0. *Corrected: v0 assumed WinAppDeployCmd.*
 3. File logging plus the two named helpers. *Raised: v0 had instrumentation inside phase 1 but did not know that no file logging exists at all, which makes every later phase unmeasurable without it.*
-4. Build of `main` at the fixes-only commit deployed to the console as the working baseline. *Corrected twice: v0 expected to compare against an existing install, but the dev partition is empty; and the deployed control build is `main`, not `baseline/upstream`, because `main` is what actually builds and what every experiment branches from (section 5).*
+4. Deploy and verify the instrumented control from section 0 as the working baseline. Its current CI result is a credential-gated skip, so this console prerequisite remains open.
 5. The cheap phase 2 discriminating tests, including the zero-code Game-mode and VRR toggles. *Added: these did not exist in v0 and each can eliminate a hypothesis for almost nothing.*
 6. HDR force-PQ (3A), then the PR #281 port (3B). *Corrected: v0 put the PR #281 cherry-pick first; it does not apply and 3A isolates the variable better.*
 7. HDR reapply after resize (3C) and after device loss (3D).
@@ -788,7 +789,7 @@ The central question sits between items 9 and 10 and is answered by the results 
 7. When a hypothesis is refuted, write down that it was refuted. A refuted hypothesis is a result.
 8. Do not fix the symptom by changing the TV, the host calibration, or a picture mode.
 9. Log state changes, never every frame.
-10. Keep two controls untouched: `main` at the fixes-only commit is what pacing and drop-count comparisons run against, because it is what actually builds and what every experiment branches from; `baseline/upstream` stays the pristine pre-fork reference, comparison only, nothing branches from it (section 5).
+10. Keep two controls untouched: the instrumented control in section 0 is the reference for pacing and drop-count comparisons; `baseline/upstream` remains the pristine pre-fork reference. Keep each rendering treatment isolated from the others (section 5).
 11. Do not modify submodules.
 12. Do not open an upstream pull request without a measured result.
 13. When blocked, name the blocked gate exactly and continue with everything that does not depend on it.
