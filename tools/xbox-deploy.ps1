@@ -168,14 +168,22 @@ function Resolve-DeployArtifact {
         throw "ArtifactDir not found or not a directory: $ArtifactDir"
     }
 
-    $bundle = Get-ChildItem -LiteralPath $ArtifactDir -Filter '*.msixbundle' -File -ErrorAction SilentlyContinue |
+    $artifactFull = (Get-Item -LiteralPath $ArtifactDir).FullName.TrimEnd('\', '/')
+    $depthOf = { (($_.DirectoryName.TrimEnd('\', '/').Substring($artifactFull.Length)) -split '[\\/]' | Where-Object { $_ }).Count }
+    $notDependency = { ($_.FullName.Substring($artifactFull.Length) -split '[\\/]') -notcontains 'Dependencies' }
+
+    $bundle = Get-ChildItem -LiteralPath $ArtifactDir -Filter '*.msixbundle' -File -Recurse -ErrorAction SilentlyContinue |
+        Where-Object $notDependency |
+        Sort-Object $depthOf |
         Select-Object -First 1
     if (-not $bundle) {
-        $bundle = Get-ChildItem -LiteralPath $ArtifactDir -Filter '*.msix' -File -ErrorAction SilentlyContinue |
+        $bundle = Get-ChildItem -LiteralPath $ArtifactDir -Filter '*.msix' -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object $notDependency |
+            Sort-Object $depthOf |
             Select-Object -First 1
     }
     if (-not $bundle) {
-        throw "No .msixbundle or .msix package found directly under $ArtifactDir"
+        throw "No .msixbundle or .msix package found under $ArtifactDir"
     }
 
     $dependencies = @()
