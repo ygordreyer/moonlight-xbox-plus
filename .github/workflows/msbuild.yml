@@ -1,13 +1,74 @@
 ---
+# MSBuild CI/CD for the ygordreyer/moonlight-xbox-plus fork.
+#
+# This is a rework of the upstream TheElixZammuto/moonlight-xbox workflow of
+# the same name, kept close to the original step order but with the
+# following fork-specific additions:
+#
+#   - Broader push triggers (main, baseline/**, experiment/**, feature/**,
+#     ci/**) so working branches get CI without needing a PR, plus a
+#     workflow_dispatch with a "deploy" toggle and a free-form "ref_note".
+#   - A version-stamping step that rewrites Package.appxmanifest's
+#     Identity/Version to <major>.<minor>.<run_number>.0 so every build
+#     produced by this workflow carries a unique, traceable version.
+#   - A cache around the two from-source vcpkg installed-trees produced by
+#     generate-thirdparty-projects.bat (moonlight-common-c and
+#     libgamestream each configure+build their own vcpkg manifest install,
+#     separate from the prebuilt vcpkg_installed.zip restored below), plus
+#     vcpkg's download cache, to avoid rebuilding the same third-party
+#     dependencies from source on every run.
+#   - A step that adds the Windows SDK bin\10.0.*\x64 directory to PATH so
+#     fxc.exe (the D3D shader compiler needed by the main solution build)
+#     is resolvable.
+#   - Certificate handling is redesigned around a real fork-owned signing
+#     secret (secrets.SIGNING_PFX_BASE64, optionally paired with
+#     secrets.SIGNING_PFX_PASSWORD) instead of upstream's two
+#     repository-identity-gated steps (one for a PR from a fork, one for
+#     push/PR from TheElixZammuto/moonlight-xbox), which do not apply to a
+#     fork whose canonical remote is not TheElixZammuto's. When the signing
+#     secret is not configured (for example a PR from an external fork,
+#     which cannot see this repo's secrets anyway, or a fresh clone before
+#     secrets are set up) an ephemeral self-signed certificate is generated
+#     instead, so the build still produces a sideloadable package.
+#   - A build-info.json written into the output directory after msbuild
+#     runs, recording the stamped version, run metadata, and the dispatch
+#     ref_note (if any).
+#   - A new "deploy" job on a self-hosted xbox-lan runner that installs the
+#     freshly built package onto a paired Xbox Dev Mode console via
+#     tools/xbox-deploy.ps1 (Windows Device Portal REST API). It only runs
+#     for non-PR events on this fork's own repository, and additionally
+#     respects the deploy input when triggered via workflow_dispatch. Xbox
+#     console credentials never pass through the workflow: they live only
+#     in a local credentials.json on the xbox-lan runner, which
+#     tools/xbox-deploy.ps1 reads directly (see that script's own header
+#     comment for the full resolution order and soft-fail behavior).
 name: MSBuild
 
 on:
-  pull_request:
-    branches: [master]
-    types: [opened, synchronize, reopened]
   push:
-    branches: [master]
+    branches:
+      - main
+      - 'baseline/**'
+      - 'experiment/**'
+      - 'feature/**'
+      - 'ci/**'
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: 'Deploy the built package to the Xbox dev console after a successful build'
+        type: boolean
+        default: false
+      ref_note:
+        description: 'Free-form note describing why this run was triggered (recorded in build-info.json)'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
@@ -29,6 +90,36 @@ jobs:
     - name: Add MSBuild to PATH
       uses: microsoft/setup-msbuild@v2
 
+    - name: Stamp package version
+      shell: pwsh
+      run: |
+        $manifestPath = Join-Path $env:GITHUB_WORKSPACE 'Package.appxmanifest'
+        $manifest = Get-Content -Path $manifestPath -Raw
+
+        # Anchor on a preceding whitespace char so this can only match the
+        # standalone Identity/Version attribute, never the tail of
+        # MinVersion="..." / MaxVersionTested="...".
+        $versionPattern = '(?<=\s)Version="\d+\.\d+\.\d+\.\d+"'
+        $found = [regex]::Matches($manifest, $versionPattern)
+        if ($found.Count -ne 1) {
+          throw "Expected exactly one standalone Version attribute in $manifestPath, found $($found.Count)"
+        }
+
+        if (-not ($manifest -match '(?<=\s)Version="(\d+)\.(\d+)\.\d+\.\d+"')) {
+          throw "Could not parse major/minor out of the Version attribute in $manifestPath"
+        }
+        $major = $Matches[1]
+        $minor = $Matches[2]
+
+        $runNumber = $env:GITHUB_RUN_NUMBER
+        $newVersion = "$major.$minor.$runNumber.0"
+
+        $updated = [regex]::Replace($manifest, $versionPattern, ('Version="' + $newVersion + '"'))
+        Set-Content -Path $manifestPath -Value $updated -NoNewline -Encoding utf8BOM
+
+        Write-Host "Stamped $manifestPath version to $newVersion"
+        "PACKAGE_VERSION=$newVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
     - name: Restore VCPKG packages
       run: |
         Invoke-WebRequest `
@@ -44,76 +135,102 @@ jobs:
     - name: Install VCPKG packages
       run: .\vcpkg\bootstrap-vcpkg.bat
 
+    - name: Cache vcpkg from-source builds
+      uses: actions/cache@v4
+      with:
+        path: |
+          third_party/moonlight-common-c/build/vcpkg_installed
+          libgamestream/build/vcpkg_installed
+          vcpkg/downloads
+        # generate-thirdparty-projects.bat points both sub-builds'
+        # VCPKG_MANIFEST_DIR at the single repo-root vcpkg.json (../.. from
+        # third_party/moonlight-common-c, .. from libgamestream), so that
+        # root manifest is what determines their installed contents; the
+        # batch file itself is hashed too since its CMake flags (triplet,
+        # UWP target) also shape the installed tree.
+        key: vcpkg-fromsource-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'generate-thirdparty-projects.bat') }}
+        restore-keys: |
+          vcpkg-fromsource-${{ runner.os }}-
+
     - name: Build third party tools
       run: .\generate-thirdparty-projects.bat
 
     - name: Restore NuGet
       run: nuget restore ${{env.SOLUTION_FILE_PATH}}
 
-    - name: Load Certificate (fork)
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      id: cert
-      if: >-
-        github.event_name == 'pull_request' &&
-        !startsWith(github.event.pull_request.head.repo.full_name, 'TheElixZammuto/')
+    - name: Add Windows SDK bin directory to PATH (fxc.exe)
+      shell: pwsh
       run: |
-        # generate a self signed certificate in pfx format
-        
-        # https://learn.microsoft.com/en-us/windows/msix/package/create-certificate-package-signing#use-new-selfsignedcertificate-to-create-a-certificate
+        $sdkBinRoot = 'C:\Program Files (x86)\Windows Kits\10\bin'
+        $candidate = Get-ChildItem -Path $sdkBinRoot -Directory -Filter '10.0.*' |
+          Sort-Object Name -Descending |
+          Select-Object -First 1
+        if (-not $candidate) {
+          throw "No Windows SDK version directories found under $sdkBinRoot"
+        }
+        $fxcDir = Join-Path $candidate.FullName 'x64'
+        if (-not (Test-Path (Join-Path $fxcDir 'fxc.exe'))) {
+          throw "fxc.exe not found in $fxcDir"
+        }
+        Write-Host "Adding $fxcDir to PATH"
+        Add-Content -Path $env:GITHUB_PATH -Value $fxcDir
+
+    - name: Load signing certificate (repo secret)
+      id: cert
+      if: ${{ secrets.SIGNING_PFX_BASE64 != '' }}
+      shell: pwsh
+      env:
+        SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
+        SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+      run: |
+        $bytes = [System.Convert]::FromBase64String($env:SIGNING_PFX_BASE64)
+        [System.IO.File]::WriteAllBytes('cert.pfx', $bytes)
+        Get-FileHash -Path cert.pfx
+
+        $password = $env:SIGNING_PFX_PASSWORD
+        if ($password) {
+          Write-Host "::add-mask::$password"
+        }
+        "password=$password" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+    - name: Generate ephemeral self-signed certificate
+      id: certtmp
+      if: steps.cert.outcome == 'skipped'
+      shell: pwsh
+      run: |
+        # No SIGNING_PFX_BASE64 secret is configured (for example a PR from
+        # an external fork, which cannot see this repo's secrets regardless,
+        # or a fresh clone before secrets are set up). Fall back to a
+        # throwaway self-signed certificate so the build still produces a
+        # sideloadable package; it will not match the Publisher's real
+        # signing identity.
         $cert = New-SelfSignedCertificate `
           -Type Custom `
           -Subject "CN=CE07B73A-712E-4E05-932B-D08CE2C8A87C" `
           -KeyUsage DigitalSignature `
-          -FriendlyName "MoonlightUWP" `
+          -FriendlyName "MoonlightUWP (ephemeral CI)" `
           -CertStoreLocation "Cert:\LocalMachine\My" `
           -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")
 
-        # Use the GITHUB_TOKEN to create a password for the certificate
-        # The token expires when the workflow ends OR after a maximum of 24 hours
-        # GITHUB_TOKENS from forks have very limited permissions, which is basically read-only
-        $githubToken = $env:GH_TOKEN
-        $md5 = New-Object -TypeName System.Security.Cryptography.MD5CryptoServiceProvider
-        $hashBytes = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($githubToken))
-        $hash = [System.BitConverter]::ToString($hashBytes).Replace("-", "").ToLower()
-        $password = ConvertTo-SecureString -String $hash -Force -AsPlainText
-
-        # export the password for later use, decoded
-        $github_output = "password=$hash"
-        $github_output | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        $password = [System.Guid]::NewGuid().ToString("N")
+        Write-Host "::add-mask::$password"
 
         Export-PfxCertificate `
           -Cert Cert:\LocalMachine\My\$($cert.Thumbprint) `
           -FilePath cert.pfx `
-          -Password (ConvertTo-SecureString -String $hash -AsPlainText -Force)
-        Get-FileHash -Path "cert.pfx"
+          -Password (ConvertTo-SecureString -String $password -AsPlainText -Force)
+        Get-FileHash -Path cert.pfx
 
-        # # Add the certificate to the local machine store
-        # $cert_guid = [guid]::NewGuid()
-        # netsh http add sslcert `
-        #   ipport=0.0.0.0:443 `
-        #   certhash=$($cert.Thumbprint.ToString()) `
-        #   appid=$($cert_guid.ToString('B'))
-
-    - name: Load Certificate (local)
-      if: >-
-        (startsWith(github.event.pull_request.head.repo.full_name, 'TheElixZammuto/') &&
-            github.event_name == 'pull_request') ||
-        (startsWith(github.repository, 'TheElixZammuto/') &&
-            github.event_name == 'push')
-      env:
-        CERTIFICATE_FILE: ${{ secrets.CERTIFICATE_FILE }}
-      run: |
-        $encodedBytes = [System.Convert]::FromBase64String($env:CERTIFICATE_FILE)
-        Set-Content "cert.pfx" -Value $encodedBytes -AsByteStream
-        Get-FileHash -Path "cert.pfx"
+        "password=$password" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
     - name: Build
       # Add additional options to the MSBuild command line here (like platform or verbosity level).
       # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
       run: |
-        # get the password from the output if this is a fork
-        $certPassword = "${{ steps.cert.outputs.password }}"
+        # Exactly one of the two certificate steps above runs, so exactly
+        # one of these two outputs is non-empty; concatenating coalesces
+        # them into whichever one actually ran.
+        $certPassword = "${{ steps.cert.outputs.password }}${{ steps.certtmp.outputs.password }}"
 
         # if certPassword is not empty, use it
         if ($certPassword -ne "") {
@@ -132,16 +249,81 @@ jobs:
           $certPasswordArg `
           ${{env.SOLUTION_FILE_PATH}}
 
+    - name: Write build metadata
+      shell: pwsh
+      run: |
+        $info = [ordered]@{
+          version       = $env:PACKAGE_VERSION
+          runId         = $env:GITHUB_RUN_ID
+          runNumber     = $env:GITHUB_RUN_NUMBER
+          sha           = $env:GITHUB_SHA
+          ref           = $env:GITHUB_REF
+          eventName     = $env:GITHUB_EVENT_NAME
+          refNote       = '${{ inputs.ref_note }}'
+          builtAt       = (Get-Date).ToUniversalTime().ToString("o")
+          configuration = $env:BUILD_CONFIGURATION
+        }
+        New-Item -ItemType Directory -Path output -Force | Out-Null
+        $info | ConvertTo-Json | Set-Content -Path output/build-info.json -Encoding utf8
+        Get-Content output/build-info.json
+
     - name: Clean Certificate
       if: always()  # clean up, even if build fails
       run: |
         if(test-path cert.pfx){
           Remove-Item -path cert.pfx
         }
-      
+
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: moonlight-uwp
         path: |
           output
+        if-no-files-found: error
+        retention-days: 30
+
+  deploy:
+    name: Deploy to Xbox dev console
+    needs: build
+    runs-on: [self-hosted, xbox-lan]
+    # Only this fork's own repository owns an xbox-lan runner; never attempt
+    # this job on a PR (including same-repo PRs) or on a fork-of-the-fork.
+    # On workflow_dispatch, additionally require the deploy input.
+    if: >-
+      github.repository == 'ygordreyer/moonlight-xbox-plus' &&
+      github.event_name != 'pull_request' &&
+      (github.event_name != 'workflow_dispatch' || inputs.deploy == true)
+    concurrency:
+      # There is exactly one physical console behind the xbox-lan runner;
+      # serialize deploys across branches instead of letting them race.
+      group: xbox-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Checkout (for tools/xbox-deploy.ps1)
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: moonlight-uwp
+          path: artifact
+
+      - name: Deploy to Xbox
+        shell: pwsh
+        run: |
+          ./tools/xbox-deploy.ps1 `
+            -ArtifactDir artifact `
+            -OutputDir deploy-out `
+            -Require `
+            -Launch `
+            -Screenshot
+
+      - name: Upload deploy output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-out
+          path: deploy-out
+          if-no-files-found: warn
+          retention-days: 30
