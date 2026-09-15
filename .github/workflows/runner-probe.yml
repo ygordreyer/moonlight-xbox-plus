@@ -1,0 +1,16 @@
+name: Runner probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, xbox-lan]
+    timeout-minutes: 5
+    steps:
+      - name: Say hello from the runner
+        shell: pwsh
+        run: Write-Host "probe ok on $env:COMPUTERNAME"
