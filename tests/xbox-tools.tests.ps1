@@ -59,6 +59,45 @@ function Start-MockPortal {
     [pscustomobject]@{ Port = $port; Job = $job }
 }
 
+function Start-MockInstallPortal {
+    $port = Get-FreePort
+    $job = Start-Job -ArgumentList $port -ScriptBlock {
+        param($Port)
+        $listener = [Net.HttpListener]::new()
+        $listener.Prefixes.Add("http://127.0.0.1:$Port/")
+        $listener.Start()
+        try {
+            $context = $listener.GetContext()
+            $request = $context.Request
+            $query = [Web.HttpUtility]::ParseQueryString($request.Url.Query)
+            $hasPackage = $request.HttpMethod -eq 'POST' -and $request.Url.AbsolutePath -eq '/api/app/packagemanager/package' -and $query['package'] -eq 'mockbundle.msix'
+            $hasCsrf = $request.Headers['X-CSRF-Token'] -eq 'mock-csrf' -and $request.Headers['Cookie'] -match 'CSRF-Token=mock-csrf'
+            $reader = [IO.StreamReader]::new($request.InputStream, $request.ContentEncoding)
+            $bodyText = $reader.ReadToEnd()
+            $hasMainDisposition = $bodyText -match 'name="mockbundle\.msix"; filename="mockbundle\.msix"'
+            $hasDependency = $bodyText -match 'name="mockdependency\.appx"; filename="mockdependency\.appx"' -and $bodyText -notmatch 'mockdependency\.appx\.opt'
+            $response = $context.Response
+            if ($hasPackage -and $hasCsrf -and $hasMainDisposition -and $hasDependency) {
+                $response.StatusCode = 200
+                $body = 'accepted'
+            } else {
+                $response.StatusCode = 400
+                $body = "missing package, quoted multipart disposition, dependency filename, or CSRF cookie/header (package=$($query['package']); main=$hasMainDisposition; dependency=$hasDependency; csrf=$hasCsrf)"
+            }
+            $bytes = [Text.Encoding]::UTF8.GetBytes($body)
+            $response.ContentLength64 = $bytes.Length
+            $response.OutputStream.Write($bytes, 0, $bytes.Length)
+            $response.Close()
+            [pscustomobject]@{ HasPackage = $hasPackage; HasMainDisposition = $hasMainDisposition; HasDependency = $hasDependency; HasCsrf = $hasCsrf }
+        } finally {
+            $listener.Stop()
+            $listener.Close()
+        }
+    }
+    Start-Sleep -Milliseconds 100
+    [pscustomobject]@{ Port = $port; Job = $job }
+}
+
 function Invoke-LogsTool {
     param([string]$CredentialPath, [string]$OutDir)
     & pwsh -NoProfile -File $logsTool -CredentialPath $CredentialPath -OutDir $OutDir -RequireValidCertificate | Out-Host
@@ -69,6 +108,53 @@ function Invoke-DeployTool {
     param([string]$CredentialPath, [string]$ArtifactDir)
     $output = & pwsh -NoProfile -File $deployTool -ArtifactDir $ArtifactDir -CredentialsPath $CredentialPath -Require 2>&1 | Out-String
     [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
+}
+
+function Invoke-InstallPackageMock {
+    param([int]$Port, [System.IO.FileInfo]$Package, [System.IO.FileInfo[]]$Dependencies)
+    $tokens = $null; $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($deployTool, [ref]$tokens, [ref]$errors)
+    $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Install-DevicePortalPackage' }, $true)
+    Invoke-Expression $definition.Extent.Text
+    function global:Write-DeployLog { param([string]$Message, [string]$Level) }
+    try {
+        $baseUri = "http://127.0.0.1:$Port"
+        $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+        $session.Cookies.Add([Uri]$baseUri, [Net.Cookie]::new('CSRF-Token', 'mock-csrf', '/'))
+        $password = ConvertTo-SecureString 'mock-password' -AsPlainText -Force
+        $credential = [PSCredential]::new('mock-user', $password)
+        $dpSession = [pscustomobject]@{ BaseUri = $baseUri; Session = $session; Credential = $credential; CsrfToken = 'mock-csrf' }
+        Install-DevicePortalPackage -DpSession $dpSession -Package $Package -Dependencies $Dependencies -SkipCertCheck:$false -TimeoutSec 10
+    } finally {
+        Remove-Item Function:\global:Write-DeployLog -Force -ErrorAction SilentlyContinue
+        Remove-Item Function:\Install-DevicePortalPackage -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-LaunchRequestMock {
+    param([string]$PackageFamilyName, [string]$PackageFullName, [string]$AppId)
+    $tokens = $null; $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($deployTool, [ref]$tokens, [ref]$errors)
+    foreach ($name in @('Start-DevicePortalApp')) {
+        $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+        Invoke-Expression $definition.Extent.Text
+    }
+    $script:launchUri = $null
+    function global:Write-DeployLog { param([string]$Message, [string]$Level) }
+    function global:Invoke-WebRequest {
+        param([string]$Uri, [Parameter(ValueFromRemainingArguments = $true)]$Unused)
+        $script:launchUri = $Uri
+        return [pscustomobject]@{ StatusCode = 200 }
+    }
+    try {
+        $dpSession = [pscustomobject]@{ BaseUri = 'http://mock'; Session = $null; CsrfToken = 'mock' }
+        Start-DevicePortalApp -DpSession $dpSession -SkipCertCheck:$false -PackageFamilyName $PackageFamilyName -PackageFullName $PackageFullName -AppId $AppId
+        return $script:launchUri
+    } finally {
+        Remove-Item Function:\global:Write-DeployLog -Force -ErrorAction SilentlyContinue
+        Remove-Item Function:\global:Invoke-WebRequest -Force -ErrorAction SilentlyContinue
+        Remove-Item Function:\Start-DevicePortalApp -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Invoke-RecursiveLocalStateMock {
@@ -117,6 +203,52 @@ try {
     $parseErrors = @()
     [System.Management.Automation.Language.Parser]::ParseFile($deployTool, [ref]$null, [ref]$parseErrors) | Out-Null
     Assert-That ($parseErrors.Count -eq 0) 'xbox-deploy.ps1 did not parse.'
+    $deploySource = Get-Content -Raw -LiteralPath $deployTool
+    Assert-That ($deploySource -match 'CookieContainer = \$DpSession\.Session\.Cookies') 'Package upload must share the authenticated portal cookie container.'
+    Assert-That ($deploySource -match 'HttpClientHandler\]::DangerousAcceptAnyServerCertificateValidator') 'Package upload must use the built-in runspace-independent TLS validator when certificate checks are skipped.'
+    Assert-That ($deploySource -notmatch 'ServerCertificateCustomValidationCallback\s*=\s*\{') 'Package upload must not install a PowerShell scriptblock TLS callback.'
+    $uploadHandler = [System.Net.Http.HttpClientHandler]::new()
+    try {
+        $uploadCookies = [System.Net.CookieContainer]::new()
+        $uploadValidator = [System.Net.Http.HttpClientHandler]::DangerousAcceptAnyServerCertificateValidator
+        $uploadHandler.CookieContainer = $uploadCookies
+        $uploadHandler.ServerCertificateCustomValidationCallback = $uploadValidator
+        Assert-That ([object]::ReferenceEquals($uploadHandler.CookieContainer, $uploadCookies)) 'HttpClientHandler must retain the portal cookie container.'
+        Assert-That ($uploadHandler.ServerCertificateCustomValidationCallback -eq $uploadValidator) 'HttpClientHandler must accept the built-in TLS validator delegate.'
+    } finally {
+        $uploadHandler.Dispose()
+    }
+
+    $tokens = $null; $errors = $null
+    $deployAst = [System.Management.Automation.Language.Parser]::ParseFile($deployTool, [ref]$tokens, [ref]$errors)
+    $familyResolver = $deployAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Resolve-DevicePortalPackageFamilyName' }, $true)
+    Invoke-Expression $familyResolver.Extent.Text
+    try {
+        $fullName = '50497EliaZammuto.MoonlightUWP_1.18.19.0_x64__wjq6j17wd9wbe'
+        $familyName = Resolve-DevicePortalPackageFamilyName -PackageFullName $fullName
+        Assert-That ($familyName -eq '50497EliaZammuto.MoonlightUWP_wjq6j17wd9wbe') 'Package family must be derived from the full package name when Xbox omits its publisher suffix.'
+        $badFamilyError = $null
+        try { Resolve-DevicePortalPackageFamilyName -PackageFullName 'not-a-package-full-name' | Out-Null } catch { $badFamilyError = $_ }
+        Assert-That ($null -ne $badFamilyError) 'Malformed package full names must not produce a launch family.'
+        $launchUri = Invoke-LaunchRequestMock -PackageFamilyName $familyName -PackageFullName $fullName -AppId 'App'
+        $launchQuery = [Web.HttpUtility]::ParseQueryString(([Uri]$launchUri).Query)
+        $launchAumid = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($launchQuery['appid']))
+        $launchPackage = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($launchQuery['package']))
+        Assert-That ($launchAumid -eq "$familyName!App" -and $launchPackage -eq $fullName) 'Launch request must use the observed Xbox PackageRelativeId AUMID and installed package full name.'
+    } finally {
+        Remove-Item Function:\Resolve-DevicePortalPackageFamilyName -Force -ErrorAction SilentlyContinue
+    }
+
+    $uploadPackagePath = Join-Path $work 'mockbundle.msix'
+    $uploadDependencyPath = Join-Path $work 'mockdependency.appx'
+    Set-Content -LiteralPath $uploadPackagePath -Value 'mock package payload'
+    Set-Content -LiteralPath $uploadDependencyPath -Value 'mock dependency payload'
+    $uploadMock = Start-MockInstallPortal
+    Invoke-InstallPackageMock -Port $uploadMock.Port -Package (Get-Item -LiteralPath $uploadPackagePath) -Dependencies @((Get-Item -LiteralPath $uploadDependencyPath))
+    $uploadJob = Wait-Job $uploadMock.Job -Timeout 30
+    Assert-That ($null -ne $uploadJob -and $uploadMock.Job.State -eq 'Completed') 'Package upload mock did not complete within 30 seconds.'
+    $uploadReceipt = Receive-Job $uploadMock.Job
+    Assert-That ($uploadReceipt.HasPackage -and $uploadReceipt.HasMainDisposition -and $uploadReceipt.HasDependency -and $uploadReceipt.HasCsrf) 'Package upload must send the required query filename, quoted multipart filenames, regular dependency filename, and CSRF cookie/header pair.'
 
     $missingOut = Join-Path $work 'missing'
     Assert-That ((Invoke-LogsTool (Join-Path $work 'absent.json') $missingOut) -eq 0) 'Missing credentials must soft-skip.'

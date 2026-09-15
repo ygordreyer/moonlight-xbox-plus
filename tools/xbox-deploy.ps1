@@ -34,7 +34,7 @@
       POST /api/app/packagemanager/package       - multipart package install
       GET  /api/app/packagemanager/state         - install progress/result
       GET  /api/app/packagemanager/packages      - installed package lookup
-      POST /api/taskmanager/app                  - launch by AUMID
+      POST /api/taskmanager/app                  - launch by package full name and AUMID
       GET  /api/filesystem/apps/files            - list LocalState files
       GET  /api/filesystem/apps/file             - download one LocalState file
       GET  /ext/screenshot                       - console screenshot (jpg)
@@ -76,9 +76,8 @@
     Launch the app after a successful install.
 
 .PARAMETER AppUserModelId
-    Override the AUMID used for -Launch (PackageFamilyName!AppId). Default is
-    computed from the installed package's PackageFamilyName plus the app id
-    "App" from Package.appxmanifest.
+    Override the AUMID used for -Launch (PackageFamilyName!AppId). The package
+    family is validated against the installed package.
 
 .PARAMETER PullLocalState
     Download every file under the app's LocalState folder to
@@ -360,8 +359,13 @@ function Install-DevicePortalPackage {
     # NetworkCredential's own internals, never assigned to a script variable.
     $handler.Credentials = [System.Net.NetworkCredential]::new($DpSession.Credential.UserName, $DpSession.Credential.Password)
     $handler.PreAuthenticate = $true
+    # HttpClient does not inherit Invoke-WebRequest's WebRequestSession. Keep
+    # its authenticated CSRF cookie paired with the CSRF header below.
+    $handler.CookieContainer = $DpSession.Session.Cookies
     if ($SkipCertCheck) {
-        $handler.ServerCertificateCustomValidationCallback = { $true }
+        # A scriptblock callback can run on an HttpClient worker without a
+        # PowerShell runspace. Use the framework delegate instead.
+        $handler.ServerCertificateCustomValidationCallback = [System.Net.Http.HttpClientHandler]::DangerousAcceptAnyServerCertificateValidator
     }
 
     $client = [System.Net.Http.HttpClient]::new($handler)
@@ -373,13 +377,13 @@ function Install-DevicePortalPackage {
     try {
         $content = [System.Net.Http.MultipartFormDataContent]::new()
 
-        # Dependency files are uploaded with a .opt suffix appended to their
-        # filename. The main bundle keeps its own filename unchanged.
+        # Framework dependencies use their original filenames. Device Portal
+        # reserves a .opt suffix for optional related packages only.
         $uploadEntries = @(
             [pscustomobject]@{ File = $Package; UploadName = $Package.Name }
         )
         foreach ($dep in @($Dependencies)) {
-            $uploadEntries += [pscustomobject]@{ File = $dep; UploadName = "$($dep.Name).opt" }
+            $uploadEntries += [pscustomobject]@{ File = $dep; UploadName = $dep.Name }
         }
         foreach ($entry in $uploadEntries) {
             $fs = [System.IO.File]::OpenRead($entry.File.FullName)
@@ -387,9 +391,16 @@ function Install-DevicePortalPackage {
             $sc = [System.Net.Http.StreamContent]::new($fs)
             $sc.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse('application/octet-stream')
             $content.Add($sc, $entry.UploadName, $entry.UploadName)
+            # Device Portal's multipart parser requires quoted form-data name
+            # and filename parameters, including for token-safe filenames.
+            $quotedUploadName = '"' + $entry.UploadName + '"'
+            $sc.Headers.ContentDisposition.Name = $quotedUploadName
+            $sc.Headers.ContentDisposition.FileName = $quotedUploadName
         }
 
-        $installUri = "$($DpSession.BaseUri)/api/app/packagemanager/package"
+        # Windows Device Portal requires the uploaded main package's filename
+        # in the package query parameter as well as the multipart payload.
+        $installUri = "$($DpSession.BaseUri)/api/app/packagemanager/package?package=$([Uri]::EscapeDataString($Package.Name))"
         $response = $client.PostAsync($installUri, $content).GetAwaiter().GetResult()
 
         if (-not $response.IsSuccessStatusCode) {
@@ -474,6 +485,18 @@ function Wait-DevicePortalInstall {
     }
 }
 
+function Resolve-DevicePortalPackageFamilyName {
+    param([Parameter(Mandatory)] [string]$PackageFullName)
+
+    # PackageFullName is Name_Version_Architecture_ResourceId_PublisherId.
+    # The empty ResourceId in a normal package produces the double underscore.
+    $parts = $PackageFullName -split '_', 5
+    if ($parts.Count -ne 5 -or [string]::IsNullOrWhiteSpace($parts[0]) -or [string]::IsNullOrWhiteSpace($parts[4])) {
+        throw "Installed package returned an invalid PackageFullName: '$PackageFullName'."
+    }
+    return "$($parts[0])_$($parts[4])"
+}
+
 function Get-DevicePortalInstalledPackage {
     param(
         [Parameter(Mandatory)] [pscustomobject]$DpSession,
@@ -498,6 +521,12 @@ function Get-DevicePortalInstalledPackage {
     if (-not $match) {
         throw "Could not find an installed package matching identity '$IdentityName' after install."
     }
+    $derivedFamily = Resolve-DevicePortalPackageFamilyName -PackageFullName ([string]$match.PackageFullName)
+    $reportedFamilyProperty = $match.PSObject.Properties['PackageFamilyName']
+    if ($reportedFamilyProperty -and $reportedFamilyProperty.Value -and $reportedFamilyProperty.Value -ne $derivedFamily) {
+        Write-DeployLog "Device Portal reported PackageFamilyName '$($reportedFamilyProperty.Value)'; using '$derivedFamily' derived from PackageFullName." -Level Warn
+    }
+    $match | Add-Member -NotePropertyName PackageFamilyName -NotePropertyValue $derivedFamily -Force
     return $match
 }
 
@@ -510,9 +539,8 @@ function Start-DevicePortalApp {
         [Parameter(Mandatory)] [string]$AppId
     )
 
-    # Device Portal's package launch parameter expects the package full name,
-    # not the package family name. The appid parameter still uses the family
-    # name as part of the PRAID (PackageFamilyName!AppId).
+    # Xbox Device Portal reports PackageRelativeId as a full AUMID. Use the
+    # normalized package family plus manifest Application Id for appid.
     $aumidB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$PackageFamilyName!$AppId"))
     $pfnB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PackageFullName))
 
@@ -736,6 +764,9 @@ try {
     if ($Launch) {
         $aumid = if ($AppUserModelId) { $AppUserModelId } else { "$($pkgInfo.PackageFamilyName)!$script:ManifestAppId" }
         $parts = $aumid -split '!', 2
+        if ($parts.Count -ne 2 -or [string]::IsNullOrWhiteSpace($parts[1]) -or $parts[0] -ne $pkgInfo.PackageFamilyName) {
+            throw "AppUserModelId must use the installed package family '$($pkgInfo.PackageFamilyName)' followed by '!<AppId>'."
+        }
         Write-DeployLog "Launching $aumid..."
         Start-DevicePortalApp -DpSession $dp -SkipCertCheck $skipCert -PackageFamilyName $parts[0] -PackageFullName $pkgInfo.PackageFullName -AppId $parts[1]
         $summary.launched = $true
