@@ -81,6 +81,10 @@ env:
 jobs:
   build:
     runs-on: windows-2022
+    env:
+      # secrets is not a valid context inside if:; surface the presence of
+      # the signing secret as a job env string and test that instead.
+      HAS_SIGNING_PFX: ${{ secrets.SIGNING_PFX_BASE64 != '' }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -177,7 +181,7 @@ jobs:
 
     - name: Load signing certificate (repo secret)
       id: cert
-      if: ${{ secrets.SIGNING_PFX_BASE64 != '' }}
+      if: env.HAS_SIGNING_PFX == 'true'
       shell: pwsh
       env:
         SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
