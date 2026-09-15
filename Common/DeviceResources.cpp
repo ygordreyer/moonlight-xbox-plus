@@ -57,6 +57,7 @@ namespace ScreenRotation
 // Constructor for DeviceResources.
 DX::DeviceResources::DeviceResources() :
 	m_backBufferFormat(DXGI_FORMAT_R10G10B10A2_UNORM), // 10-bit for HDR
+	m_lastColorSpace(DXGI_COLOR_SPACE_CUSTOM),
 	m_screenViewport(),
 	m_d3dFeatureLevel(D3D_FEATURE_LEVEL_11_1),
 	m_d3dRenderTargetSize(),
@@ -498,6 +499,21 @@ void DX::DeviceResources::HandleDeviceLost()
 
 	CreateDeviceResources();
 	CreateWindowSizeDependentResources();
+
+	// The swap chain created above starts in the DXGI default color space, and the renderer's
+	// own cache still says the space it applied before the loss is in effect, so nothing else
+	// would re-apply it. Once per device loss, never per frame.
+	// Moves to DeviceResources::ApplyColorSpace when the hdr-instrumentation branch merges.
+	if (m_lastColorSpace != DXGI_COLOR_SPACE_CUSTOM)
+	{
+		HRESULT colorSpaceHr = m_swapChain->SetColorSpace1(m_lastColorSpace);
+		Utils::Logf("HandleDeviceLost(): SetColorSpace1(%u) returned 0x%08X\n",
+			static_cast<unsigned int>(m_lastColorSpace), static_cast<unsigned int>(colorSpaceHr));
+	}
+	else
+	{
+		Utils::Log("HandleDeviceLost(): no swap chain color space to re-apply\n");
+	}
 
 	if (m_deviceNotify != nullptr)
 	{

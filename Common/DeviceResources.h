@@ -36,6 +36,8 @@ namespace DX
 		void                        SetRefreshRate(double rate)             { m_refreshRate = rate; }
 		int                         GetFrameRate() const                    { return m_frameRate; }
 		void                        SetFrameRate(int rate)                  { m_frameRate = rate; }
+		// Last swap chain color space that SetColorSpace1 accepted; HandleDeviceLost() re-applies it.
+		void                        SetLastColorSpace(DXGI_COLOR_SPACE_TYPE colorSpace) { m_lastColorSpace = colorSpace; }
 
 		bool                        GetShowImGui() const                    { return m_showImGui; }
 		void                        SetShowImGui(bool show)                 { m_showImGui = show; }
@@ -115,6 +117,8 @@ namespace DX
 		IDeviceNotify*                                  m_deviceNotify;
 
 		DXGI_FORMAT                                     m_backBufferFormat;
+		// DXGI_COLOR_SPACE_CUSTOM until the renderer applies a color space.
+		DXGI_COLOR_SPACE_TYPE                           m_lastColorSpace;
 		bool                                            m_showImGui;
 		bool                                            m_imguiRunning;
 	};

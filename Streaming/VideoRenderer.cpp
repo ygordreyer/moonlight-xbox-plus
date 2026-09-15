@@ -181,6 +181,7 @@ bool VideoRenderer::Render(AVFrame *frame) {
 		UINT colorSpaceSupport = 0;
 		if (colorspace && SUCCEEDED(m_deviceResources->GetSwapChain()->CheckColorSpaceSupport(colorspace, &colorSpaceSupport)) && (colorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT)) {
 			DX::ThrowIfFailed(m_deviceResources->GetSwapChain()->SetColorSpace1(colorspace));
+			m_deviceResources->SetLastColorSpace(colorspace);
 			Utils::Logf("Colorspace changed to %s\n",
 			            colorspace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
 			                ? "DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020"
