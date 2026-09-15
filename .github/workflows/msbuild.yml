@@ -169,17 +169,25 @@ jobs:
     - name: Add Windows SDK bin directory to PATH (fxc.exe)
       shell: pwsh
       run: |
-        $sdkBinRoot = 'C:\Program Files (x86)\Windows Kits\10\bin'
-        $candidate = Get-ChildItem -Path $sdkBinRoot -Directory -Filter '10.0.*' |
-          Sort-Object Name -Descending |
-          Select-Object -First 1
-        if (-not $candidate) {
-          throw "No Windows SDK version directories found under $sdkBinRoot"
+        $onPath = Get-Command fxc.exe -ErrorAction SilentlyContinue
+        if ($onPath) { Write-Host "fxc.exe already on PATH: $($onPath.Source)"; exit 0 }
+        # Kit root from the registry first (a self-hosted machine can keep the SDK on any drive), hosted-runner literal last.
+        $roots = @(
+          (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -ErrorAction SilentlyContinue).KitsRoot10,
+          (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots' -ErrorAction SilentlyContinue).KitsRoot10,
+          (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Microsoft SDKs\Windows\v10.0' -ErrorAction SilentlyContinue).InstallationFolder,
+          'C:\Program Files (x86)\Windows Kits\10\'
+        ) | Where-Object { $_ } | Select-Object -Unique
+        $fxcDir = $null
+        foreach ($root in $roots) {
+          $bin = Join-Path $root 'bin'
+          if (-not (Test-Path $bin)) { continue }
+          $candidate = Get-ChildItem -Path $bin -Directory -Filter '10.0.*' |
+            Where-Object { Test-Path (Join-Path $_.FullName 'x64\fxc.exe') } |
+            Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if ($candidate) { $fxcDir = Join-Path $candidate.FullName 'x64'; break }
         }
-        $fxcDir = Join-Path $candidate.FullName 'x64'
-        if (-not (Test-Path (Join-Path $fxcDir 'fxc.exe'))) {
-          throw "fxc.exe not found in $fxcDir"
-        }
+        if (-not $fxcDir) { throw "fxc.exe not found under any Windows SDK root: $($roots -join '; ')" }
         Write-Host "Adding $fxcDir to PATH"
         Add-Content -Path $env:GITHUB_PATH -Value $fxcDir
 

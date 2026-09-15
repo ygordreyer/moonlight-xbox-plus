@@ -49,7 +49,7 @@ Can correct HDR plus true VRR be had on the XAML `SwapChainPanel` path that this
 | Visual Studio | VS 2022 assumed for convenience | VS 17 2022 is mandatory | `generate-thirdparty-projects.bat:2` and `:4` hardcode `-G "Visual Studio 17 2022"` |
 | vcpkg cost | Prebuilt `vcpkg_installed.zip` is reused | The generator never passes `VCPKG_INSTALLED_DIR`, so every fresh build pays a from-source vcpkg build | Same two lines have no `-DVCPKG_INSTALLED_DIR`; local probe about 20 min, upstream CI step 27 min |
 | Upstream CI | Assumed green | Upstream master CI is RED at the Build step. Cause known: C2664 at `Streaming/FFmpegDecoder.cpp(628,21)`, libavformat 59 write-callback signature. Fix in 6.5, CLOSED. | Run 34136005241: C2664 at `Streaming/FFmpegDecoder.cpp(628,21)`, libavformat 59 write-callback signature; fix in 6.5 |
-| Code signing on the fork | Not addressed | Fixed: `.github/workflows/msbuild.yml` decodes `SIGNING_PFX_BASE64` to `cert.pfx` on `push` and `workflow_dispatch`; the inherited ephemeral-cert step fires only when that secret is absent (in practice, a pull request from an external fork). Both signing secrets are SET. | `.github/workflows/msbuild.yml:186-198` (repo-secret cert) and `:200-230` (ephemeral fallback); note [1] |
+| Code signing on the fork | Not addressed | Fixed: `.github/workflows/msbuild.yml` decodes `SIGNING_PFX_BASE64` to `cert.pfx` on `push` and `workflow_dispatch`; the inherited ephemeral-cert step fires only when that secret is absent (in practice, a pull request from an external fork). Both signing secrets are SET. | `.github/workflows/msbuild.yml:194-206` (repo-secret cert) and `:200-230` (ephemeral fallback); note [1] |
 | vcpkg zip source | Not addressed | The prebuilt zip URL is owned by upstream; mirror it or accept the dependency | `msbuild.yml:128-132` ("Restore VCPKG packages") fetches from `TheElixZammuto/moonlight-xbox` release 1.10.0 |
 | Logging | Read logs from the on-screen overlay | No file logging exists at all | `Utils.cpp:16` ring vector, `:62` `OutputDebugString`, `:65-66` eviction at `LOG_LINES` |
 | PR #281 | Cherry-pick it | It does not apply on HEAD; port it by hand | `git apply --check` fails at `VideoRenderer.cpp:159` and `VideoRenderer.h:97` |
@@ -437,7 +437,7 @@ Two things are NOT verified: whether the AtLogOn trigger actually starts it on a
 
 ### 7.2 Job gating, a security control and not a convenience
 
-The deploy job is gated, as built (`msbuild.yml:320-323`), on `github.repository == 'ygordreyer/moonlight-xbox-plus' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.deploy == true)`, runs on `[self-hosted, xbox-lan]`, and carries `needs: build` so it consumes the uploaded artifact rather than rebuilding. Its own concurrency group `xbox-deploy` (`cancel-in-progress: false`) serializes deploys so two pushes in quick succession queue rather than race the console.
+The deploy job is gated, as built (`msbuild.yml:328-331`), on `github.repository == 'ygordreyer/moonlight-xbox-plus' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.deploy == true)`, runs on `[self-hosted, xbox-lan]`, and carries `needs: build` so it consumes the uploaded artifact rather than rebuilding. Its own concurrency group `xbox-deploy` (`cancel-in-progress: false`) serializes deploys so two pushes in quick succession queue rather than race the console.
 
 Never `pull_request`. The fork is public. The fork-PR approval policy is `all_external_contributors`, which needs approval before workflows run, and that policy protects the build job. A deploy job triggerable by a PR would put arbitrary contributed code on a console on the owner's LAN with portal credentials in scope. The `inputs.deploy` clause gives a `workflow_dispatch` caller an explicit off switch (`deploy: false`) for a build-only run. A dispatch-only deploy (never automatic on push) was considered and not taken as the default: the owner's explicit ask was automatic deploy on every push, and rule 33 (section 16) covers the one real risk that leaves, a push landing mid manual-console-test-sweep, while the `xbox-deploy` concurrency group already serializes competing runs.
 
@@ -1099,6 +1099,6 @@ Fix, landed in commit `020a440`: surface the presence check once, as a job-level
       id: cert
       if: env.HAS_SIGNING_PFX == 'true'
 ```
-`msbuild.yml:186-188`.
+`msbuild.yml:194-196`.
 
 `secrets.SIGNING_PFX_BASE64 != ''` still runs fine inside the `env:` value itself (`:88`), because an `env:` block is not an `if:` expression and does allow the `secrets` context; only the later `if:` (`:188`) has to read it back off `env.HAS_SIGNING_PFX` rather than off `secrets` directly.
