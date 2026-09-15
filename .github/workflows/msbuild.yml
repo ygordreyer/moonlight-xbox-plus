@@ -94,6 +94,8 @@ jobs:
 
     - name: Add MSBuild to PATH
       uses: microsoft/setup-msbuild@v2
+      with:
+        vs-version: '[17.0,18.0)'
 
     - name: Stamp package version
       shell: pwsh
