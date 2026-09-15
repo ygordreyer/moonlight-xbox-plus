@@ -320,13 +320,20 @@ function Install-DevicePortalPackage {
     try {
         $content = [System.Net.Http.MultipartFormDataContent]::new()
 
-        $allFiles = @($Package) + @($Dependencies)
-        foreach ($file in $allFiles) {
-            $fs = [System.IO.File]::OpenRead($file.FullName)
+        # Dependency files are uploaded with a .opt suffix appended to their
+        # filename. The main bundle keeps its own filename unchanged.
+        $uploadEntries = @(
+            [pscustomobject]@{ File = $Package; UploadName = $Package.Name }
+        )
+        foreach ($dep in @($Dependencies)) {
+            $uploadEntries += [pscustomobject]@{ File = $dep; UploadName = "$($dep.Name).opt" }
+        }
+        foreach ($entry in $uploadEntries) {
+            $fs = [System.IO.File]::OpenRead($entry.File.FullName)
             $streams.Add($fs)
             $sc = [System.Net.Http.StreamContent]::new($fs)
             $sc.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse('application/octet-stream')
-            $content.Add($sc, $file.Name, $file.Name)
+            $content.Add($sc, $entry.UploadName, $entry.UploadName)
         }
 
         $installUri = "$($DpSession.BaseUri)/api/app/packagemanager/package"
@@ -357,6 +364,7 @@ function Wait-DevicePortalInstall {
 
     $deadline = (Get-Date).AddSeconds($PollTimeoutSec)
     $stateUri = "$($DpSession.BaseUri)/api/app/packagemanager/state"
+    $lastObservedState = 'no response received yet'
 
     while ($true) {
         $params = @{
@@ -383,6 +391,7 @@ function Wait-DevicePortalInstall {
                     throw "Install reported failure: $($json.Reason)"
                 }
             }
+            $lastObservedState = 'HTTP 200 with no terminal result yet'
             Write-DeployLog 'Install still in progress (state endpoint returned 200 with no terminal result yet)...'
             $handledAsInProgress = $true
         } catch [System.Net.Http.HttpRequestException] {
@@ -393,6 +402,7 @@ function Wait-DevicePortalInstall {
                 $statusCode = [int]$_.Exception.Response.StatusCode
             }
             if ($statusCode -eq 400) {
+                $lastObservedState = 'HTTP 400 (in progress)'
                 Write-DeployLog 'Install still in progress (state endpoint returned 400)...'
                 $handledAsInProgress = $true
             } else {
@@ -405,7 +415,7 @@ function Wait-DevicePortalInstall {
         if (-not $handledAsInProgress) { return }
 
         if ((Get-Date) -ge $deadline) {
-            throw "Timed out after $PollTimeoutSec seconds waiting for install to complete."
+            throw "Timed out after $PollTimeoutSec seconds waiting for install to complete. Last observed state: $lastObservedState."
         }
         Start-Sleep -Seconds $PollIntervalSec
     }
@@ -443,11 +453,15 @@ function Start-DevicePortalApp {
         [Parameter(Mandatory)] [pscustomobject]$DpSession,
         [bool]$SkipCertCheck,
         [Parameter(Mandatory)] [string]$PackageFamilyName,
+        [Parameter(Mandatory)] [string]$PackageFullName,
         [Parameter(Mandatory)] [string]$AppId
     )
 
+    # Device Portal's package launch parameter expects the package full name,
+    # not the package family name. The appid parameter still uses the family
+    # name as part of the PRAID (PackageFamilyName!AppId).
     $aumidB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$PackageFamilyName!$AppId"))
-    $pfnB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PackageFamilyName))
+    $pfnB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PackageFullName))
 
     $uri = "$($DpSession.BaseUri)/api/taskmanager/app?appid=$aumidB64&package=$pfnB64"
     $params = @{
@@ -632,7 +646,7 @@ try {
         $aumid = if ($AppUserModelId) { $AppUserModelId } else { "$($pkgInfo.PackageFamilyName)!$script:ManifestAppId" }
         $parts = $aumid -split '!', 2
         Write-DeployLog "Launching $aumid..."
-        Start-DevicePortalApp -DpSession $dp -SkipCertCheck $skipCert -PackageFamilyName $parts[0] -AppId $parts[1]
+        Start-DevicePortalApp -DpSession $dp -SkipCertCheck $skipCert -PackageFamilyName $parts[0] -PackageFullName $pkgInfo.PackageFullName -AppId $parts[1]
         $summary.launched = $true
     }
 
