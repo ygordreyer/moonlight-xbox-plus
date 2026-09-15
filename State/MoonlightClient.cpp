@@ -259,7 +259,8 @@ int MoonlightClient::StartStreaming(std::shared_ptr<DX::DeviceResources> res, St
 		            config.clientRefreshRateX100, config.fps, rr);
 	}
 	config.colorRange = this->IsRGBFull() ? COLOR_RANGE_FULL : COLOR_RANGE_LIMITED;
-	config.colorSpace = COLORSPACE_REC_601;
+	// experiment/sdr-rec709: request Rec.709 instead of the Rec.601 literal, see docs/experiments/sdr-rec709.md
+	config.colorSpace = COLORSPACE_REC_709;
 	config.encryptionFlags = ENCFLG_AUDIO;
 	config.packetSize = 1024;
 
