@@ -2,22 +2,20 @@
 
 ## 0. Status and how to read this plan
 
-- Revision 2, 2026-09-14. v1 (this same file) was folded after an adversarial review the same day; every finding was fixed or explicitly adapted to the as-built workflow and script, none waived.
+- Revision 3, 2026-09-15. Permanent local CI continuation supersedes the temporary hosted-runner plan. Revision 2 was dated 2026-09-14. v1 (this same file) was folded after an adversarial review the same day; every finding was fixed or explicitly adapted to the as-built workflow and script, none waived.
 - v0's intent, goals, observations, phases, branch names, acceptance criteria, and its 15 AI instructions are preserved. This revision corrects facts, adds receipts, and adds the build and deploy lanes that v0 left implicit.
 - Executed by autonomous agents on the model-delegation ladder: haiku for mechanical fully specified steps, sonnet for ordinary bounded work, opus only for senior judgment, fable only for adversarial review. Never spawn opus or fable for fan-out.
 - The owner is away for a long stretch. Everything that does not need him runs unattended. Everything that does need him is named once, in section 17, as a copy-ready action.
 
-### Where things stand, 2026-09-14
+### Where things stand
 
-- The fork (`ygordreyer/moonlight-xbox-plus`) and its working clone at `F:\GitHub\moonlight-xbox-plus` exist. A throwaway probe clone at `F:\GitHub\moonlight-xbox-plus-build` holds a proven green local build and is never pushed.
-- `main` is the fork's default and integration branch, created from `ci/fork-workflow`. `master` mirrors `upstream/master` untouched. `baseline/upstream` is a pushed, pristine reference. Two commits carry the fork's CI and build fixes: `41a54ec` ("ci: fork workflow with signing secret and Xbox deploy job") and a second commit, subject "build: fix ffmpeg avio callback const and fork cert thumbprint" (the FFmpegDecoder version guard, the vcxproj certificate thumbprint, and the workflow changes in section 6.1).
-- The self-hosted runner `ygor-desktop-xbox-lan` is online.
-- Repository secrets `SIGNING_PFX_BASE64` and `SIGNING_PFX_PASSWORD` are SET (Gate 2, section 17, is CLOSED).
-- The local build is GREEN (Gate 4, section 17, is CLOSED). Cause of the earlier failure and the fix are in 6.3.
-- The upstream CI cause is known and the fix is landed (Gate 5, section 17, is CLOSED). See 6.5.
-- Deploy soft-skips cleanly until `C:\Users\ygordreyer\.xbox-deploy\credentials.json` exists (Gate 1, section 17, is OPEN, the one owner action).
-- GitHub Actions billing lock refuses hosted jobs on this account; the `build` job runs on the self-hosted lane (`ygor-desktop-xbox-lan`) until the owner clears it at https://github.com/settings/billing (Gate 6, section 17; mechanism in 6.6).
-- Next steps: watch the self-hosted build lane run green on `main` (section 6.6), cut the 14 experiment and feature branches, and the owner creates `credentials.json` after setting Remote Access credentials with an `auto-` username in Dev Home (Gate 1).
+- Known build baseline: `main` at `628d8e0`, verified on 2026-09-15. Run `34971495347` built successfully; deployment skipped because Device Portal credentials were absent.
+- Owner decision, 2026-09-15: builds run permanently on this Windows PC. GitHub-hosted minutes and GitHub artifact storage are not prerequisites.
+- Continuation integration lives on `topic/moonlight-xbox`. Recovered experiments remain isolated until reviewed and measured.
+- One runner is online: `ygor-desktop-xbox-lan`. Real logon startup and console installation remain unverified.
+- Signing secrets are configured. Never read or print their values.
+- The recovered workload includes completed local commits, partial pacing source and research-only bitrate/composition lanes. A terminal session-limit notice does not prove a lane wrote nothing.
+- Next: validate permanent local CI, select behavior-preserving instrumentation, build reviewed experiments, then measure on the console after credentials are configured.
 
 ### The central question, kept from v0
 
@@ -39,29 +37,31 @@ Can correct HDR plus true VRR be had on the XAML `SwapChainPanel` path that this
 
 ---
 
-## 1. Changes from v0
+## 1. Changes from v0 (historical revision 2 snapshot)
+
+These receipts describe the 2026-09-14 baseline. Sections 0, 6 and 7 supersede its CI assumptions; current telemetry work is documented under `docs/experiments/hdr-instrumentation.md`.
 
 | Item | v0 said | Now | Evidence |
 | --- | --- | --- | --- |
-| Deploy transport | WinAppDeployCmd over the network | Device Portal REST on port 11443 from the self-hosted runner | `tools/xbox-deploy.ps1` (section 7.3); WDP endpoint list at learn.microsoft.com device-portal-api-core |
+| Deploy transport | WinAppDeployCmd over the network | Device Portal REST on port 11443 from the self-hosted runner | • `tools/xbox-deploy.ps1` (section 7.3)<br>• WDP endpoint list at learn.microsoft.com device-portal-api-core |
 | Baseline build | Compare against the app already on the console | Console dev partition is empty, so the baseline is our own build of upstream master | Dev Home reads "There are no installed apps or games" |
-| Windows SDK | Install SDK 10.0.19041 | No SDK override needed | vcxproj pins unversioned `WindowsTargetPlatformVersion=10.0`; `F:\Windows Kits\10` has 10.0.22621.0 and 10.0.26100.0 |
+| Windows SDK | Install SDK 10.0.19041 | No SDK override needed | • vcxproj pins unversioned `WindowsTargetPlatformVersion=10.0`<br>• `F:\Windows Kits\10` has 10.0.22621.0 and 10.0.26100.0 |
 | Visual Studio | VS 2022 assumed for convenience | VS 17 2022 is mandatory | `generate-thirdparty-projects.bat:2` and `:4` hardcode `-G "Visual Studio 17 2022"` |
-| vcpkg cost | Prebuilt `vcpkg_installed.zip` is reused | The generator never passes `VCPKG_INSTALLED_DIR`, so every fresh build pays a from-source vcpkg build | Same two lines have no `-DVCPKG_INSTALLED_DIR`; local probe about 20 min, upstream CI step 27 min |
-| Upstream CI | Assumed green | Upstream master CI is RED at the Build step. Cause known: C2664 at `Streaming/FFmpegDecoder.cpp(628,21)`, libavformat 59 write-callback signature. Fix in 6.5, CLOSED. | Run 34136005241: C2664 at `Streaming/FFmpegDecoder.cpp(628,21)`, libavformat 59 write-callback signature; fix in 6.5 |
-| Code signing on the fork | Not addressed | Fixed: `.github/workflows/msbuild.yml` decodes `SIGNING_PFX_BASE64` to `cert.pfx` on `push` and `workflow_dispatch`; the inherited ephemeral-cert step fires only when that secret is absent (in practice, a pull request from an external fork). Both signing secrets are SET. | `.github/workflows/msbuild.yml:196-208` (repo-secret cert) and `:210-240` (ephemeral fallback); note [1] |
-| vcpkg zip source | Not addressed | The prebuilt zip URL is owned by upstream; mirror it or accept the dependency | `msbuild.yml:130-134` ("Restore VCPKG packages") fetches from `TheElixZammuto/moonlight-xbox` release 1.10.0 |
+| vcpkg cost | Prebuilt `vcpkg_installed.zip` is reused | The generator never passes `VCPKG_INSTALLED_DIR`, so every fresh build pays a from-source vcpkg build | • Same two lines have no `-DVCPKG_INSTALLED_DIR`<br>• local probe about 20 min, upstream CI step 27 min |
+| Upstream CI | Assumed green | • Upstream build failed with C2664<br>• FFmpeg write-callback signature mismatch<br>• Fix recorded in section 6.5 | • Run 34136005241: C2664 at `Streaming/FFmpegDecoder.cpp(628,21)`, libavformat 59 write-callback signature<br>• fix in 6.5 |
+| Code signing on the fork | Not addressed | • Fixed: `.github/workflows/msbuild.yml` decodes `SIGNING_PFX_BASE64` to `cert.pfx` on `push` and `workflow_dispatch`<br>• the inherited ephemeral-cert step fires only when that secret is absent (in practice, a pull request from an external fork). Both signing secrets are SET. | • `.github/workflows/msbuild.yml:196-208` (repo-secret cert) and `:210-240` (ephemeral fallback)<br>• note [1] |
+| vcpkg zip source | Not addressed | • The prebuilt zip URL is owned by upstream<br>• mirror it or accept the dependency | `msbuild.yml:130-134` ("Restore VCPKG packages") fetches from `TheElixZammuto/moonlight-xbox` release 1.10.0 |
 | Logging | Read logs from the on-screen overlay | No file logging exists at all | `Utils.cpp:16` ring vector, `:62` `OutputDebugString`, `:65-66` eviction at `LOG_LINES` |
-| PR #281 | Cherry-pick it | It does not apply on HEAD; port it by hand | `git apply --check` fails at `VideoRenderer.cpp:159` and `VideoRenderer.h:97` |
+| PR #281 | Cherry-pick it | • It does not apply on HEAD<br>• port it by hand | `git apply --check` fails at `VideoRenderer.cpp:159` and `VideoRenderer.h:97` |
 | Tearing history | The tearing code was removed and should be restored | The only historical tearing code is a 12 ms `usleep` gated to Xbox One | Commit `3993f9a`, gated on `IsXboxOne()` and `LiGetPendingVideoFrames() < 2` |
 | VRR API surface | Query the display for VRR | UWP `HdmiDisplayMode` and `HdmiDisplayInformation` expose zero VRR members | Full member enumeration, research memo section 2, restated in 3.20 |
 | SDR colorspace | Not addressed | The client hardcodes Rec.601 for every stream | `State/MoonlightClient.cpp:262` `config.colorSpace = COLORSPACE_REC_601;` |
-| HDMI mode switching | Not addressed | `SetDisplayHDR` is the only HDMI switch site and nothing resets SDR on stream end | `State/MoonlightClient.cpp:61`; `VideoRenderer::Stop()` at `:701-703` is a no-op |
-| Resource mode | Not addressed | App versus Game resource mode is a free zero-code lever (Game gets about 5 GB and 4 exclusive cores) | Dev Home "Treat UWP apps as games by default"; research memo section 2 |
-| Host location | Host unspecified | The Foundation Sunshine host is this same PC, service from `C:\Program Files\Sunshine` | `Get-Service Sunshine`; install path `C:\Program Files\Sunshine` |
-| CI runner | To be set up | Self-hosted runner already online: id 2, `ygor-desktop-xbox-lan`, labels `self-hosted, Windows, X64, xbox-lan` | `gh api repos/ygordreyer/moonlight-xbox-plus/actions/runners --jq '.runners[] | select(.name=="ygor-desktop-xbox-lan")'` |
-| Fork visibility | Not addressed | Fork is public; fork-PR approval policy `all_external_contributors` keeps fork PRs off the runner | `gh api repos/ygordreyer/moonlight-xbox-plus --jq .private` (false); `gh api repos/ygordreyer/moonlight-xbox-plus/actions/permissions/workflow` |
-| Local build | Assumed to work | GREEN as of 2026-09-14 once a harness environment variable is cleared (6.3); no longer a diagnosis in progress | Local MSBuild is green once `NoDefaultCurrentDirectoryInExePath` is cleared in the launching shell (harness-set variable; not a code or CI problem) |
+| HDMI mode switching | Not addressed | `SetDisplayHDR` is the only HDMI switch site and nothing resets SDR on stream end | • `State/MoonlightClient.cpp:61`<br>• `VideoRenderer::Stop()` at `:701-703` is a no-op |
+| Resource mode | Not addressed | App versus Game resource mode is a free zero-code lever (Game gets about 5 GB and 4 exclusive cores) | • Dev Home "Treat UWP apps as games by default"<br>• research memo section 2 |
+| Host location | Host unspecified | The Foundation Sunshine host is this same PC, service from `C:\Program Files\Sunshine` | • `Get-Service Sunshine`<br>• install path `C:\Program Files\Sunshine` |
+| CI runner | To be set up | Self-hosted runner already online: id 2, `ygor-desktop-xbox-lan`, labels `self-hosted, Windows, X64, xbox-lan` | `gh api repos/ygordreyer/moonlight-xbox-plus/actions/runners --jq '.runners[] \| select(.name=="ygor-desktop-xbox-lan")'` |
+| Fork visibility | Not addressed | • Fork is public<br>• fork-PR approval policy `all_external_contributors` keeps fork PRs off the runner | • `gh api repos/ygordreyer/moonlight-xbox-plus --jq .private` (false)<br>• `gh api repos/ygordreyer/moonlight-xbox-plus/actions/permissions/workflow` |
+| Local build | Assumed to work | • GREEN as of 2026-09-14 once a harness environment variable is cleared (6.3)<br>• no longer a diagnosis in progress | • Local MSBuild is green once `NoDefaultCurrentDirectoryInExePath` is cleared in the launching shell (harness-set variable<br>• not a code or CI problem) |
 | Manifest target | Assumed `Windows.Xbox` | It is `Windows.Universal` | `Package.appxmanifest:24` |
 
 [1] The fork cert gap, CLOSED. This described the inherited upstream workflow, which had exactly two certificate steps, neither of which fired for a push or a `workflow_dispatch` on the fork. The fork's own workflow (`.github/workflows/msbuild.yml`, section 6.1) replaces both: "Load signing certificate (repo secret)" at `:196-208` fires whenever `secrets.SIGNING_PFX_BASE64` is set, and "Generate ephemeral self-signed certificate" at `:210-240` fires only when that step was skipped (in practice, a pull request from an external fork, which cannot see the repo's secrets). Both secrets are SET, so the repo-secret path runs on every push and `workflow_dispatch`.
@@ -170,7 +170,7 @@ Can correct HDR plus true VRR be had on the XAML `SwapChainPanel` path that this
 
 - `.github/workflows/msbuild.yml` is 405 lines (`wc -l`), `name: MSBuild` at `:45`. This is the fork's own rewrite (commit `41a54ec` plus the fixes-only commit named in section 0), not the inherited upstream file; the full step-by-step contract is section 6.1. Line count grew from 351 while the billing lock is active: one comment line above `runs-on` and a three-line `Set up NuGet` step, both described below and in 6.6. It grew again from 365 to 405 when the build job gained a runner-local package handoff step and the deploy job gained a runner-local fallback step, both added so the deploy job keeps working while artifact storage is locked too (6.1, 7.2).
 - Triggers at `:47-67`: `push` on branches `main`, `baseline/**`, `experiment/**`, `feature/**`, `ci/**`; `pull_request` on `[main]` with types `[opened, synchronize, reopened]`; `workflow_dispatch` with inputs `deploy` (boolean, default `true`) and `ref_note` (free text). `concurrency` group is `${{ github.workflow }}-${{ github.ref }}` with `cancel-in-progress: true` (`:73-75`).
-- `env` at `:77-79`: `SOLUTION_FILE_PATH: .`, `BUILD_CONFIGURATION: Release`. Job `build` at `:82` now `runs-on: [self-hosted, xbox-lan]` (`:84`), TEMPORARY while the billing lock is active (6.6); the revert target is `runs-on: windows-2022`, what this line read before the lock.
+- Build environment remains `SOLUTION_FILE_PATH: .`, `BUILD_CONFIGURATION: Release`. Permanent self-hosted behavior is defined in section 6.1; older workflow line numbers below are historical receipts.
 - Steps: `actions/checkout@v4` at `:90-93` (fetch-depth 0, submodules recursive); "Add MSBuild to PATH" (`microsoft/setup-msbuild@v2`) at `:95-98`; "Stamp package version" at `:100-128` (rewrites `Package.appxmanifest`'s `Identity/Version` to `<major>.<minor>.<run_number>.0`, exports `PACKAGE_VERSION` via `GITHUB_ENV`); "Restore VCPKG packages" at `:130-134` (downloads `vcpkg_installed.zip` from `TheElixZammuto/moonlight-xbox` release `1.10.0`); "Extract VCPKG packages" at `:136-137`; "List VCPKG packages" at `:139-140`; "Install VCPKG packages" at `:142-143` running `.\vcpkg\bootstrap-vcpkg.bat`; "Cache vcpkg from-source builds" at `:145-160` (keyed on `hashFiles('vcpkg.json', 'generate-thirdparty-projects.bat')`); "Build third party tools" at `:162-163` running `.\generate-thirdparty-projects.bat`; "Set up NuGet" (`nuget/setup-nuget@v2`) at `:165-166`, added while the build job runs on the self-hosted lane (6.6) because that machine does not ship `nuget.exe` on PATH (18.9); "Restore NuGet" at `:168-169` (`nuget restore`); "Add Windows SDK bin directory to PATH (fxc.exe)" at `:171-194`; "Load signing certificate (repo secret)" at `:196-208` (id `cert`, fires when `secrets.SIGNING_PFX_BASE64 != ''`); "Generate ephemeral self-signed certificate" at `:210-240` (id `certtmp`, fires only when the previous step was skipped); "Build" at `:242-284`; "Write build metadata" at `:286-302`; "Clean Certificate" at `:304-309` (`if: always()`); "Upload artifacts" at `:330-339` (`actions/upload-artifact@v4`, name `moonlight-uwp`, path `output`, `if-no-files-found: error`, `retention-days: 30`).
 - The Build step (`:242-284`) reads `SIGNING_PFX_PASSWORD` from its own `env:`, coalesces `$certPassword` from `$env:EPHEMERAL_PFX_PASSWORD` (set by the ephemeral step through `GITHUB_ENV`, because the runner drops a step output whose value contains a masked secret) or `$env:SIGNING_PFX_PASSWORD`, coerces it to `[string]`, computes `$thumb` from `(Resolve-Path 'cert.pfx').Path` via `X509Certificate2`, and passes `/p:PackageCertificateThumbprint=$thumb` alongside `/p:Configuration=Release /p:AppxBundle=Always /p:AppxPackageDir=output /p:PackageCertificateKeyFile=cert.pfx /p:UapAppxPackageBuildMode=SideLoadOnly`. The `$thumb` override exists because `moonlight-xbox-dx.vcxproj:139` hardcodes `PackageCertificateThumbprint`; without the override msbuild fails at `Microsoft.AppXPackage.Targets(922,5)` with "Certificate does not match supplied signing thumbprint" whenever the loaded pfx is not the certificate that value names.
 - `moonlight-xbox-dx.vcxproj:139` `<PackageCertificateThumbprint>` is now `2FE3549ACE299557AACC02A3D36C996B544EF901` (the stable fork cert; upstream's value was `609C6A553DA6A00199D49BF8231E048743D5DD80`), landed in the fixes-only commit so plain VS and local builds also sign without a command-line override.
@@ -349,48 +349,35 @@ Fourteen of these (items 6 through 19) are the experiment and feature branches a
 
 - `docs/PLAN.md` (this file); `docs/experiments/<name>.md`, one per experiment branch; `docs/TEST-RESULTS.md` on each experiment branch, appended after every console run.
 - `tools/xbox-deploy.ps1`, the deploy script (section 7), already landed and read as ground truth in section 6.1 and 7.3.
-- `.github/workflows/msbuild.yml`, the fork's own rewrite of the inherited workflow (section 3.10, section 6.1), carrying both the `build` job and the `deploy` job. There is no separate `build.yml`/`deploy.yml` split; both jobs live in the one file so the `needs: build` dependency and the shared `artifact` handoff stay in one place. Because both jobs run on the same self-hosted runner, the build job also keeps a runner-local copy of the package under `<runner _work>\_handoff\<run_id>` (`:311-328`, newest five kept), the upload step is best effort (`:330-339`), and the deploy job falls back to that copy (`:374-385`) when the artifact download fails.
+- `.github/workflows/msbuild.yml` carries both jobs. Machine-local handoff and cache helpers are in `tools/ci/`; see sections 6.1 and 7.2 for the current contract.
 
 ---
 
 ## 6. Build lane
 
-### 6.1 Primary lane: GitHub-hosted windows-2022, already built
+### 6.1 Primary lane: self-hosted on this PC
 
-The fork's own workflow, `.github/workflows/msbuild.yml`, replaces the inherited one in place (it is the fork's own rewrite, not a second file alongside it), so both the build job and the deploy job live together and share the artifact handoff through `needs: build`. Full line-numbered receipts are in 3.10; this section states the contract an agent can rely on. The build job also keeps a runner-local copy of the package (`:311-328`) since the two jobs share one runner, the upload is best effort (`:330-339`), and the deploy job falls back to that copy (`:374-385`) when the artifact download fails.
+![Local Windows CI](img/local-ci-flow.svg)
 
-Triggers: `push` on `main`, `baseline/**`, `experiment/**`, `feature/**`, `ci/**`; `pull_request` on `[main]`; `workflow_dispatch` with `deploy` (boolean, default `true`) and `ref_note` (free text) inputs, so an agent can build, and choose whether to also deploy, any branch on demand.
+- `.github/workflows/msbuild.yml` owns both build and deploy jobs on the Windows `xbox-lan` runner.
+- Pushes to `main`, `baseline/**`, `experiment/**`, `feature/**`, `ci/**`, and `topic/**` build. Topic pushes are build-only integration checkpoints.
+- External-fork pull requests must not execute on this runner. Repository approval settings alone are not isolation.
+- Dispatch supports `deploy`, `ref_note`, and opt-in `upload_artifacts`. Normal pushes do not use GitHub artifact storage.
+- A newer build on the same ref can cancel an older build. Console deployments keep their separate `xbox-deploy` group with cancellation disabled.
+- Shared machine handoff and local cache are managed under `C:\moonlight-ci`, outside any runner checkout. C: had 429 GB free versus F: 314 GB when chosen.
+- Build identity uses the CI run number in the package version. `build-info.json` records the exact SHA and run; rerun attempts have separate handoff directories.
+- Signing certificate handling and Windows SDK discovery retain the established build path. The temporary PFX is removed even on failure.
+- Local-CI helper scripts and validation commands live under `tools/ci/`. Runtime build timings are evidence only after the corresponding run finishes.
 
-Steps, as built:
+### 6.2 Persistent local dependency cache
 
-1. Checkout, `fetch-depth 0`, submodules recursive.
-2. `microsoft/setup-msbuild@v2`.
-3. Stamp package version: rewrites `Package.appxmanifest`'s `Identity/Version` to `<major>.<minor>.<run_number>.0` and exports `PACKAGE_VERSION` via `GITHUB_ENV`, so every artifact is distinguishable on the console and `GET /api/app/packagemanager/packages` can tell which build is installed. The stamped manifest ships in the artifact as-is; AppX versioning requires the manifest and the installed package to agree, so this is correct rather than a cleanup omission.
-4. Restore, extract, list, and bootstrap vcpkg packages from the prebuilt `vcpkg_installed.zip` (upstream release `1.10.0`).
-5. Cache vcpkg from-source builds, keyed on `hashFiles('vcpkg.json', 'generate-thirdparty-projects.bat')`.
-6. Build third party tools: `.\generate-thirdparty-projects.bat`. The expensive step (6.2).
-7. Restore NuGet.
-8. Add the Windows SDK bin directory to PATH so `fxc.exe` resolves.
-9. **Certificate.** Two mutually exclusive steps. "Load signing certificate (repo secret)" decodes `SIGNING_PFX_BASE64` into `cert.pfx` and fires whenever that secret is set; it does not export the password as a step output, because the Actions runner drops a step output whose value contains a masked secret, so the password reaches the Build step through that step's own `env:` instead. "Generate ephemeral self-signed certificate" fires only when the repo-secret step was skipped (in practice, a pull request from an external fork, which cannot see repo secrets) and exports `EPHEMERAL_PFX_PASSWORD` via `GITHUB_ENV`. Both signing secrets are SET on this fork, so the repo-secret path runs on every push and `workflow_dispatch`; the ephemeral path is dormant machinery on this fork, exercised only by an external-fork PR.
-10. **Build.** `msbuild` with `/p:Configuration=Release /p:AppxBundle=Always /p:AppxPackageDir=output /p:PackageCertificateKeyFile=cert.pfx /p:UapAppxPackageBuildMode=SideLoadOnly`, plus `/p:PackageCertificateThumbprint=$thumb` where `$thumb` is computed at runtime from the loaded `cert.pfx` via `X509Certificate2`. This override exists because `moonlight-xbox-dx.vcxproj:139` hardcodes a thumbprint; a loaded pfx that is not that exact certificate fails at `Microsoft.AppXPackage.Targets(922,5)`, "Certificate does not match supplied signing thumbprint", without it. The vcxproj now hardcodes the fork's own stable cert thumbprint (3.10), so on this fork the override is redundant with the loaded pfx today, and is kept because it keeps the build correct through any future cert rotation.
-11. Write build metadata: `output/build-info.json` with `version`, `runId`, `runNumber`, `sha`, `ref`, `eventName`, `refNote`, `builtAt`, `configuration`, written directly as structured JSON by the workflow itself. Recovering any of these never requires parsing a log.
-12. Clean certificate, `if: always()`. `cert.pfx` never survives past this step, on a hosted runner or the self-hosted one.
-13. Upload artifact `moonlight-uwp`, the whole `output` directory, `if-no-files-found: error`.
-
-A `deploy` job runs after `build` on `[self-hosted, xbox-lan]`, gated so it only fires on pushes and dispatches to this repository and never on `pull_request` (7.2), and runs `tools/xbox-deploy.ps1` (7.3) against the downloaded artifact.
-
-### 6.2 The vcpkg cost, and two mitigations that must be verified, not assumed
-
-Measured: the local probe ran `generate-thirdparty-projects.bat` to completion in about 20 minutes and produced about 281 MB. On the hosted runner the same step took 27 minutes in upstream run 34136005241 (15:01:39 to 15:28:32). That is the dominant cost of every build.
-
-Cause, with the receipt: `generate-thirdparty-projects.bat:2` and `:4` both run cmake in manifest mode with `-DVCPKG_MANIFEST_MODE=on` and a `-DVCPKG_MANIFEST_DIR`, but neither passes `-DVCPKG_INSTALLED_DIR`. Without it, each cmake project installs its dependencies into its own `<build>/vcpkg_installed`, so the `vcpkg_installed` directory the workflow downloaded and extracted at the repository root is never consulted.
-
-Two candidate mitigations. Both are plausible. Neither is proven. Verify each by exactly one CI run and record the wall-clock time in `docs/experiments/build-lane.md` before adopting it.
-
-- **Mitigation A.** Add `-DVCPKG_INSTALLED_DIR=<repo root>\vcpkg_installed` to both cmake invocations so the prebuilt tree is reused. Confirmed risk, not a guess: the prebuilt tree (release `1.10.0`) reports `LIBAVFORMAT_VERSION_MAJOR` 59, while the vcpkg-manifest-built tree these two sub-builds currently link (`vcpkg\packages\ffmpeg_x64-uwp`) reports 62, because `vcpkg.json`'s `8.1.2#3` ffmpeg override only reaches a from-source manifest build, never the prebuilt zip (3.10, h1 in the review fold record). Pointing `moonlight-common-c` and `libgamestream` at the prebuilt tree would change the libavformat major version they build against from 62 to 59; whether their code tolerates that swing the way the main app now does (6.5's version guard) is unverified. Verify by one run and check specifically for a libavformat-59-versus-61 symptom in these two sub-builds, not just a successful link.
-- **Mitigation B.** Set `VCPKG_BINARY_SOURCES=clear;x-gha,readwrite` in the job environment along with the `ACTIONS_CACHE_URL` and `ACTIONS_RUNTIME_TOKEN` the GitHub Actions binary cache backend needs. The first run still pays full cost and populates the cache; later runs pull binaries. Verify by two runs, not one, because the benefit only appears on the second.
-
-Until one is verified, budget 30 minutes per CI build and do not treat a slow build as a failure.
+- Historical uncached generator cost was about 20 minutes locally and 27 minutes in upstream run `34136005241`.
+- The upstream prebuilt package and the manifest build serve different consumers. The prebuilt main-app libraries use libavformat 59; the manifest override uses newer FFmpeg. Do not silently replace one with the other.
+- Keep the downloaded prebuilt payload cached locally, then copy it into each workspace. Incomplete cache population must not count as a hit.
+- Use vcpkg's machine-local binary cache for manifest dependencies. Each job owns its mutable installed tree; two runners must not modify the same installed tree.
+- `generate-thirdparty-projects.bat` honors `VCPKG_INSTALLED_DIR` when explicitly provided. Both third-party projects use the job's manifest-installed tree, separate from the prebuilt app tree.
+- Cache identity includes the manifest, generator, vcpkg revision and prebuilt source URL. No GitHub cache backend is required.
+- Measure cold and warm runs before claiming a time improvement.
 
 ### 6.3 Secondary lane: local VS2022
 
@@ -399,7 +386,7 @@ Status: GREEN as of 2026-09-14. This is the current state, not a prediction.
 - Probe clone `F:\GitHub\moonlight-xbox-plus-build`. Generator completed, about 20 minutes, about 281 MB.
 - The signing certificate for local builds is the stable fork cert: subject `CN=CE07B73A-712E-4E05-932B-D08CE2C8A87C`, thumbprint `2FE3549ACE299557AACC02A3D36C996B544EF901`, `NotAfter` 2031-09-14, kept under `C:\Users\ygordreyer\.xbox-deploy\`. It is the same certificate `moonlight-xbox-dx.vcxproj:139` now hardcodes (3.10), so a plain local or Visual Studio build signs correctly with no command-line override.
 - The earlier failure ("216 Warning(s) 3 Error(s)", all three from `third_party\DirectXTK\DirectXTK_Windows10_2022.vcxproj(450,5)`, target `ATGEnsureShaders`, error MSB3073, `'CompileShaders' is not recognized as an internal or external command, operable program or batch file`, exit code 9009) is diagnosed and fixed. Cause: the Claude Code harness that launches local builds sets `NoDefaultCurrentDirectoryInExePath=1` in the shell environment. `ATGEnsureShaders` invokes a `CompileShaders.cmd` script from the DirectXTK submodule by a lookup that relies on the current directory being searched; with that variable set, `cmd.exe` drops the current directory from the search and the lookup fails with exit 9009, "command not found". Fix: clear `NoDefaultCurrentDirectoryInExePath` in the launching shell before invoking msbuild for a local build. This is a harness artifact of how the agent launches builds on this machine, not a code or CI problem: the hosted lane (windows-2022, section 6.1) never sets this variable and was never affected by it.
-- The local lane is a convenience for fast iteration, not on the critical path. It is green now, so both lanes are usable; by design the hosted lane is meant to remain sufficient on its own for every phase in this plan if the local lane ever regresses, but today the hosted lane itself does not run at all (billing lock, 6.6), and the self-hosted build lane (6.6) is what actually stands in for it. A local-lane regression right now would leave only the self-hosted CI lane, not a hosted fallback, until the lock clears.
+- Visual Studio builds are the local iteration path. The same Windows PC also hosts the permanent CI runner; there is no hosted fallback.
 
 ### 6.4 Upstream CI is red, cause known and fixed on this fork
 
@@ -407,23 +394,16 @@ Upstream master's own CI run 34136005241 (2026-09-07) shows "Build third party t
 
 ### 6.5 Required source fix before any build
 
-`Streaming/FFmpegDecoder.h` and `Streaming/FFmpegDecoder.cpp` wrap the `CaptureAvioWrite` declaration and definition with `#if LIBAVFORMAT_VERSION_MAJOR >= 61` (const `uint8_t*` buffer, matching libavformat 61 and newer, the signature PR review tooling and any future manifest-driven build would expect) `#else` (non-const `uint8_t*` buffer, matching libavformat 59, what the prebuilt `vcpkg_installed.zip` actually supplies to the main build today) `#endif`. This guard is already applied: it is currently present as uncommitted working-tree changes (`git status --short` shows `M Streaming/FFmpegDecoder.cpp` and `M Streaming/FFmpegDecoder.h`) and lands on `main` as part of the fixes-only commit named in section 0. It is required for every green build of the fork, hosted or local, and does not depend on upstream ever fixing its own CI; do not wait on upstream for this.
+`Streaming/FFmpegDecoder.h` and `Streaming/FFmpegDecoder.cpp` wrap the `CaptureAvioWrite` declaration and definition with `#if LIBAVFORMAT_VERSION_MAJOR >= 61` (const `uint8_t*` buffer, matching libavformat 61 and newer, the signature PR review tooling and any future manifest-driven build would expect) `#else` (non-const `uint8_t*` buffer, matching libavformat 59, what the prebuilt `vcpkg_installed.zip` actually supplies to the main build today) `#endif`. This guard is committed in the main baseline. The separate historical build-probe clone still carries its own uncommitted copy; that does not describe the working fork. It is required for every green build of the fork, hosted or local, and does not depend on upstream ever fixing its own CI; do not wait on upstream for this.
 
-### 6.6 Self-hosted build lane while GitHub billing is locked
+### 6.6 Permanent runner decision and earlier billing failure
 
-- Symptom: a GitHub-hosted job (`runs-on: windows-2022`) on this fork shows `completed / failure` within seconds, `steps: []`, `runner: null`; the job log itself returns HTTP 404. The only evidence is a check-run annotation.
-- How to read it: `gh api repos/ygordreyer/moonlight-xbox-plus/check-runs/<jobId>/annotations`. The annotation text is "The job was not started because your account is locked due to a billing issue."
-- Refused runs, all GitHub-hosted: 34918888396 (branch `main`), 34918896056 (branch `ci/fork-workflow`), 34919419091 and 34920673835 (branch `ci/runner-probe`).
-- Only the account owner can clear the lock, at https://github.com/settings/billing.
-- Self-hosted jobs run fine under the same lock. Proof: workflow `Runner probe` (`.github/workflows/runner-probe.yml`, exists only on branch `ci/runner-probe`, commit `2f76261`, triggers `workflow_dispatch` plus `push: branches: ['ci/runner-probe']`) ran as run 34920673895, job 104227886473, `completed / success`, 3 steps, log line `probe ok on DESKTOP`, on self-hosted runner `ygor-desktop-xbox-lan` (labels `self-hosted, Windows, X64, xbox-lan`).
-- Rule learned along the way: a `workflow_dispatch`-only workflow that exists only on a non-default branch cannot be dispatched; `gh workflow run <file> --ref <branch>` returns HTTP 404. Trigger it with a `push:` filter on its own branch instead, or merge the workflow to the default branch first.
-- Decision: the `build` job in `.github/workflows/msbuild.yml` moves from `runs-on: windows-2022` to `runs-on: [self-hosted, xbox-lan]` as a TEMPORARY lane (`:82-84`).
-- Revert condition: return the `build` job to `windows-2022` once https://github.com/settings/billing is unlocked and one hosted run is green.
-- Two ledger actions once the lock clears: revert the `build` job's `runs-on`, and delete the `ci/runner-probe` branch and its workflow file.
-- Security note: the runner already executes the `deploy` job from the same checkout (7.1), and fork pull requests need approval before any job runs (`all_external_contributors`, section 16 rule 22, `:819`), so building on the runner too adds no new exposure.
-- The runner runs one job at a time, so pushes to several branches queue rather than run in parallel.
-- Unverified until the first runner build, because none of this was exercised on the self-hosted runner before: MSBuild discovery via `microsoft/setup-msbuild@v2`'s vswhere lookup (VS 2022 is installed on the runner machine); the vcpkg zip restore path; and `NoDefaultCurrentDirectoryInExePath` (set in the Claude Code harness's own shells and known to break MSBuild's `CompileShaders` step with exit 9009, section 6.3, but the runner is launched by a scheduled task rather than a harness shell, so it should not carry that variable).
-- `nuget.exe` availability is RESOLVED for this runner machine: `Get-Command nuget.exe` and `where.exe nuget.exe` both come back empty, so a `Set up NuGet` step (`nuget/setup-nuget@v2`, `msbuild.yml:165-166`) now runs immediately before `Restore NuGet` (`:168-169`). `msbuild.exe` needs no equivalent step: `microsoft/setup-msbuild@v2` (`:95-98`) adds it to PATH on any runner, hosted or self-hosted.
+- The 2026-09-15 owner decision supersedes restoring `windows-2022`. The old restore-hosted-runner ledger item is closed.
+- Historical hosted failures `34918888396`, `34918896056`, `34919419091`, and `34920673835` had billing-lock annotations and no job steps.
+- The runner probe `34920673895` succeeded locally. Later actual app runs established working MSBuild, NuGet restore, packaging and the missing-credential deploy skip.
+- Artifact quota failures in those older runs are no longer a dependency of the permanent lane. Optional upload can still fail when explicitly requested.
+- One registered runner processes one job at a time. `tools/ci/register-runner.ps1` prepares an additional instance; creating the script does not establish that a second runner has been registered.
+- A second instance is optional throughput work. The shared handoff works independently of which instance receives a job.
 
 ---
 
@@ -431,17 +411,22 @@ Upstream master's own CI run 34136005241 (2026-09-07) shows "Build third party t
 
 ### 7.1 The runner
 
-Already live, verified: runner id 2, name `ygor-desktop-xbox-lan`, status online, labels `self-hosted, Windows, X64, xbox-lan`, install directory `C:\actions-runner\moonlight-xbox-plus`, registered as scheduled task `\AI Hub\MoonlightXboxRunner`, state Running, trigger AtLogOn, runner version 2.337.0.0.
+- Verified 2026-09-15: ID 2, `ygor-desktop-xbox-lan`, online and idle, labels `self-hosted`, `Windows`, `X64`, `xbox-lan`.
+- Installation: `C:\actions-runner\moonlight-xbox-plus`; hidden scheduled task `\AI Hub\MoonlightXboxRunner`.
+- Actual deploy jobs have run. Run `34971495347` completed with a credential-gated skip, not a console installation.
+- A real logon trigger remains unverified. Observing an already running listener does not test logon startup.
+- Shared handoff: `C:\moonlight-ci\handoff\<run_id>-<run_attempt>`. Read the helper's ready/deploy state before treating a directory as usable. Keep the newest ten eligible completed handoffs.
+- `build-info.json` and deployment output stay with their handoff. GitHub upload is optional.
+- Additional-runner tooling defaults to a separate installation; use `-WhatIf` before any registration. No second runner existed at continuation start.
 
-Two things are NOT verified: whether the AtLogOn trigger actually starts it on a real logon (it has only been observed already running), and whether any deploy job has ever run on it. The first deploy job to run is therefore also the test of both.
+### 7.2 Job gating and package handoff
 
-### 7.2 Job gating, a security control and not a convenience
-
-The deploy job is gated, as built (`msbuild.yml:351-354`), on `github.repository == 'ygordreyer/moonlight-xbox-plus' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.deploy == true)`, runs on `[self-hosted, xbox-lan]`, and carries `needs: build` so it consumes the uploaded artifact rather than rebuilding. Its own concurrency group `xbox-deploy` (`cancel-in-progress: false`) serializes deploys so two pushes in quick succession queue rather than race the console. When the artifact download fails (`:364-372`, best effort via `continue-on-error`), the deploy job falls back to the runner-local package copy the build job kept at `<runner _work>\_handoff\<run_id>` (`:374-385`), so the artifact-storage lock does not also block the deploy.
-
-Never `pull_request`. The fork is public. The fork-PR approval policy is `all_external_contributors`, which needs approval before workflows run, and that policy protects the build job. A deploy job triggerable by a PR would put arbitrary contributed code on a console on the owner's LAN with portal credentials in scope. The `inputs.deploy` clause gives a `workflow_dispatch` caller an explicit off switch (`deploy: false`) for a build-only run. A dispatch-only deploy (never automatic on push) was considered and not taken as the default: the owner's explicit ask was automatic deploy on every push, and rule 33 (section 16) covers the one real risk that leaves, a push landing mid manual-console-test-sweep, while the `xbox-deploy` concurrency group already serializes competing runs.
-
-Before relying on a dispatched run reaching the deploy job, confirm the runner is actually online: `gh api repos/ygordreyer/moonlight-xbox-plus/actions/runners --jq '.runners[] | select(.name=="ygor-desktop-xbox-lan") | .status'` should read `online`. If it does not, the task `\AI Hub\MoonlightXboxRunner` most likely stopped; recover it with `Start-ScheduledTask -TaskPath '\AI Hub\' -TaskName 'MoonlightXboxRunner'` and re-check status before assuming the deploy job itself is broken.
+- Deploy only for this fork and never for pull requests. Manual dispatch requires `deploy=true`.
+- Existing automatic deploy branches retain their behavior. `topic/**` push builds are exempt from automatic deploy; explicit dispatch remains available.
+- Deploy consumes the exact ready local handoff from its successful build. It does not rebuild or download an artifact from GitHub.
+- `xbox-deploy`, with `cancel-in-progress: false`, serializes console changes across branches. Build cancellation does not cancel an ongoing deployment.
+- Before dispatch, verify an online runner. If its task has stopped, restart the existing task and check status; do not register a replacement just because it is offline.
+- Freeze every deploying branch and deployment dispatch during a console sweep. All variants use the same installed package identity.
 
 ### 7.3 `tools/xbox-deploy.ps1` contract, as built
 
@@ -475,7 +460,7 @@ With `-DryRun`, the script validates its inputs and exits 0 before making any ne
 - **Never log credentials.** Not the username, not the password, not the Basic header, not the CSRF token, not a redacted-looking prefix of any of them. Scripts must not echo the credential file's contents and must not print the request headers they send.
 - **Never commit credentials.** The credentials file path `C:\Users\ygordreyer\.xbox-deploy\credentials.json` may be named in code and documentation. Its contents may not be read into a commit, a log, an issue, a PR body, or an agent transcript. Signing certificate material also lives under `C:\Users\ygordreyer\.xbox-deploy\` and is subject to the same rule. No agent working on this plan ever reads anything under that directory.
 - Secrets reach CI only as repository secrets (`SIGNING_PFX_BASE64`, `SIGNING_PFX_PASSWORD`). They are never echoed and the certificate file is always removed in an `if: always()` step.
-- **Never run fork PRs on the self-hosted runner.** The runner sits on the owner's LAN with portal access. Keep the fork-PR approval policy at `all_external_contributors` and keep the build job on GitHub-hosted runners.
+- **Never run external-fork PRs on the self-hosted runner.** Enforce the repository/head-repository guard in the workflow. Approval settings alone do not isolate the owner's LAN or local files.
 - **Never stage a commit with a blanket add.** `git add -A`, `git add .`, and `git commit -a` are banned on this repository; they can sweep up `cert.pfx`, a stray `credentials.json`, or other local-only files that a targeted `git add <path>` would not. Stage named paths only.
 - **Never turn on verbose msbuild logging while a certificate password is on the command line.** `/v:diag`, `/v:detailed`, and `/fl` (file logger) can all write the resolved command line, environment, or property values to a log file; combined with the password reaching msbuild through a property or environment variable, that log becomes a credential leak. Keep verbosity at the workflow's default or `/v:minimal` for any build that touches the signing certificate.
 - If a credential is ever printed anywhere, treat it as exposed, stop, and record it in section 17 as a rotation item. Do not attempt to rotate the owner's credentials autonomously.
@@ -492,9 +477,9 @@ Goal: a commit on any branch produces a signed, versioned artifact and lands on 
 - `moonlight-xbox-dx.vcxproj:139` `PackageCertificateThumbprint` was changed from upstream's `609C6A553DA6A00199D49BF8231E048743D5DD80` to the fork's stable self-signed thumbprint `2FE3549ACE299557AACC02A3D36C996B544EF901`, as part of the fixes-only commit named in section 0.
 - `tools/xbox-deploy.ps1` exists (section 7.3), including the exit-0 credential gate so the pipeline stays green while the portal credentials are missing.
 - The 14 experiment and feature branches (section 5) are created from `main` (pending; section 0 next steps), not from `baseline/upstream`: each carries its `docs/experiments/<name>.md` stub and an empty `docs/TEST-RESULTS.md`.
-- `main` at the fixes-only commit is the build point that has already run green locally (section 6.3); once pushed, GitHub-hosted runs are refused by the billing lock, and the self-hosted lane (section 6.6) is what actually runs green in CI today, not the hosted lane that section 6.1 describes as the primary design. It is what section 16 rule 10 names as the pacing and drop-count control build, not `baseline/upstream`, which is comparison-only and nothing branches from it.
+- The fixes-only `main` is the rendering control. Build infrastructure changes may be carried onto an experiment without combining rendering treatments. `baseline/upstream` remains comparison-only.
 - The local `ATGEnsureShaders` failure is resolved: clearing `NoDefaultCurrentDirectoryInExePath` fixed it (section 6.3). No further action here.
-- Exit criterion: a push or `workflow_dispatch` on `main` produces an artifact, the deploy job installs it (or cleanly skips on the credential gate), and `deploy-summary.json` is attached to the run as a job artifact. This has already happened locally. `main` already carries the fork workflow as of commit `020a440`, so no further push is needed for that; GitHub-hosted runs are refused by the account billing lock (section 6.6), and the `build` job runs on the self-hosted lane (`[self-hosted, xbox-lan]`) until the lock clears.
+- Machinery exit criterion: trusted push or dispatch produces a signed local handoff and durable deploy summary. A credential skip validates only the skip path; successful console installation requires its own receipt.
 
 ### Phase 1. Instrumentation
 
@@ -816,7 +801,7 @@ The central question sits between items 9 and 10 and is answered by the results 
 19. **Receipts over predictions.** A plan, report, or notes file may record only what actually ran. A reasoned expectation goes in a separate sentence that says it is an expectation. A test whose pass condition is "no crash" proves nothing and is not evidence.
 20. **Never print or commit credentials.** Not portal credentials, not certificate passwords, not tokens, not a partial or redacted form of any of them. Naming the file path `C:\Users\ygordreyer\.xbox-deploy\credentials.json` is fine; reading its contents into any output is not.
 21. **Never expose the Device Portal.** LAN only. No tunnel, no port forward, no proxy, no matter how convenient it would make a remote test.
-22. **Never run fork PRs on the self-hosted runner.** Keep the approval policy in place and keep the build job on GitHub-hosted runners.
+22. **Never run external-fork PRs on the self-hosted runner.** Enforce the workflow job guard; approval settings are not isolation.
 23. **Keep every branch buildable.** A branch that does not compile cannot be tested and is not an experiment.
 24. **Update `TEST-RESULTS.md` after every console run**, in the same working session, before starting the next run.
 25. **Blocked-gate handling.** When a gate needs the owner, record it in section 17 with a copy-ready command, queue every remaining task that does not depend on it, and keep working. Do not stop the project on a gate.
@@ -841,7 +826,7 @@ What the owner does, once, at the console:
 
 1. Xbox Dev Home, Remote Access Settings.
 2. Set a username and a password. **Start the username with `auto-`** (for example `auto-deploy`). The portal exempts usernames beginning `auto-` from the CSRF token requirement, which makes the deploy script simpler and removes a class of failure.
-3. Write them into `C:\Users\ygordreyer\.xbox-deploy\credentials.json` on this PC as `{"consoleAddress": "192.168.18.20", "username": "...", "password": "..."}`. All three keys are required: `Resolve-DeployCredential` in `tools/xbox-deploy.ps1` throws if any one of `consoleAddress`, `username`, or `password` is missing (section 7.3).
+3. Write them into `C:\Users\ygordreyer\.xbox-deploy\credentials.json` on this PC as `{"consoleAddress": "https://192.168.18.20:11443", "username": "...", "password": "..."}`. All three keys are required: `Resolve-DeployCredential` in `tools/xbox-deploy.ps1` throws if any one of `consoleAddress`, `username`, or `password` is missing (section 7.3).
 
 Until this exists, `tools/xbox-deploy.ps1` exits 0, writes `deploy-summary.json` with `skipped=true, reason='no credentials configured'`, and the build pipeline stays green. Everything in phases 0 and 1 that does not need the console proceeds. Do not re-probe the portal before this is done.
 
@@ -859,11 +844,14 @@ An earlier session's git credential helper was configured with a double-quoted f
 
 ### Gate 5. Upstream CI. CLOSED: cause known, fix ready.
 
-Run 34136005241 failed at the Build step after 1m24s on a C2664 error at `FFmpegDecoder.cpp:628`, `CaptureAvioWrite`'s buffer constness mismatched against libavformat 59, the version the prebuilt `vcpkg_installed.zip` actually supplies (section 6.4, section 6.5). The fix is a version guard already applied as uncommitted working-tree changes to `FFmpegDecoder.h` and `.cpp`, landing on `main` in the fixes-only commit named in section 0. Nothing here waits on the owner.
+Run 34136005241 failed at the Build step after 1m24s on a C2664 error at `FFmpegDecoder.cpp:628`, `CaptureAvioWrite`'s buffer constness mismatched against libavformat 59, the version the prebuilt `vcpkg_installed.zip` actually supplies (section 6.4, section 6.5). The version guard in `FFmpegDecoder.h` and `.cpp` is committed in the main baseline. Nothing here waits on the owner.
 
-### Gate 6. GitHub Actions billing lock. OPEN, but not blocking CI.
+### Gate 6. Hosted billing dependency. CLOSED BY DECISION.
 
-The account owning this fork (`ygordreyer/moonlight-xbox-plus`) has an Actions billing lock (6.6 has the full symptom, receipts, and mechanism). What is blocked: GitHub-hosted jobs only (`runs-on: windows-2022`). What still runs: the `build` job on the self-hosted lane (`[self-hosted, xbox-lan]`, temporary, section 6.6) and the `deploy` job, which was already self-hosted by design (7.1); the CI chain from push to deploy is live end to end today, it just never touches a hosted runner. Unlock: only the account owner, at https://github.com/settings/billing. Post-unlock actions, both ledger items already named in 6.6: revert the `build` job's `runs-on` to `windows-2022` once one hosted run is green, and delete the `ci/runner-probe` branch and its workflow file. Nothing here blocks any phase in this plan; it blocks only the section 6.1 hosted lane returning to primary.
+- Owner chose permanent CI on this Windows PC on 2026-09-15.
+- Hosted runner restoration and billing unlock are not project prerequisites.
+- Deleting the obsolete runner-probe branch is independent cleanup, not a post-billing action.
+- Local CI validation and real console deployment remain separate tasks. This decision does not prove either succeeded.
 
 ### Open questions, each needing one experiment or one read
 
@@ -872,11 +860,11 @@ The account owning this fork (`ygordreyer/moonlight-xbox-plus`) has an Actions b
 - What HTTP verbs do the `/ext/` endpoints take? UNCONFIRMED. Only `/ext/screenshot` is likely useful here, for capturing the console's own view of a test.
 - Does `CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING)` even return on an Xbox UWP composition process? UNCONFIRMED. Section 10 step 1 answers it.
 - Does the Dev Home VRR toggle reach a sideloaded UWP app? UNCONFIRMED. Section 10 step 4 answers it.
-- What is on the upstream `hdr2` branch? Unread. One `git log` and one diff answers it, and it may contain work that predates PR #281.
-- Does Foundation support a mid-stream bitrate change? UNCONFIRMED. Blocks section 13.
+- Upstream `hdr2` was checked during recovery: no unique patch relative to the referenced upstream master. Do not repeat this lane without a changed upstream ref.
+- Foundation bitrate research found control packet `0x5506` and an installed-host nvhttp bitrate endpoint. Exact payload/version and request behavior still need verification before a controller is implemented.
 - Does the client's `colorSpace` request actually change what Foundation encodes? UNCONFIRMED. Section 9 answers it.
 - Can the console's own HDR calibration values be read from a UWP app? UNCONFIRMED. Affects section 12's options.
-- Does `SimpleHDR_UWP12` exist? Only a web search snippet suggests it; UNCONFIRMED. `SimpleHDR_UWP` does exist but its guidance is deferred to a Word document that could not be read.
+- `SimpleHDR_UWP12` exists, but its readme excludes Xbox HDR implementation. Preserve Kodi as the stronger implementation lead.
 
 ---
 
@@ -1085,7 +1073,7 @@ Fix, landed in commit `020a440`: surface the presence check once, as a job-level
 
 ```yaml
   build:
-    # TEMPORARY: the account billing lock refuses hosted jobs; revert to windows-2022 once https://github.com/settings/billing is unlocked and one hosted run is green (docs/PLAN.md section 6.6)
+    # Permanent Windows PC lane (owner decision 2026-09-15).
     runs-on: [self-hosted, xbox-lan]
     env:
       # secrets is not a valid context inside if:; surface the presence of

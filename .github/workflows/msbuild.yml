@@ -52,6 +52,7 @@ on:
       - 'experiment/**'
       - 'feature/**'
       - 'ci/**'
+      - 'topic/**'
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
@@ -65,14 +66,14 @@ on:
         description: 'Free-form note describing why this run was triggered (recorded in build-info.json)'
         type: string
         default: ''
+      upload_artifacts:
+        description: 'Upload build and deploy diagnostics to GitHub Actions artifact storage'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
   actions: read
-
-concurrency:
-  group: "${{ github.workflow }}-${{ github.ref }}"
-  cancel-in-progress: true
 
 env:
   SOLUTION_FILE_PATH: .  # Path to the solution file relative to the root of the project.
@@ -80,8 +81,16 @@ env:
 
 jobs:
   build:
-    # TEMPORARY: the account billing lock refuses hosted jobs; revert to windows-2022 once https://github.com/settings/billing is unlocked and one hosted run is green (docs/PLAN.md section 6.6)
     runs-on: [self-hosted, xbox-lan]
+    # Fork PR code must never run on the local machine. Trusted same-repo PRs
+    # and pushes use this permanent runner lane.
+    if: >-
+      github.repository == 'ygordreyer/moonlight-xbox-plus' &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
+    concurrency:
+      group: build-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
     env:
       # secrets is not a valid context inside if:; surface the presence of
       # the signing secret as a job env string and test that instead.
@@ -127,14 +136,21 @@ jobs:
         Write-Host "Stamped $manifestPath version to $newVersion"
         "PACKAGE_VERSION=$newVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-    - name: Restore VCPKG packages
+    - name: Restore local VCPKG cache
+      shell: pwsh
       run: |
-        Invoke-WebRequest `
-          -Uri "https://github.com/TheElixZammuto/moonlight-xbox/releases/download/1.10.0/vcpkg_installed.zip" `
-          -OutFile .\vcpkg_installed.zip
-
-    - name: Extract VCPKG packages
-      run: Expand-Archive .\vcpkg_installed.zip -DestinationPath .\
+        $archiveUrl = 'https://github.com/TheElixZammuto/moonlight-xbox/releases/download/1.10.0/vcpkg_installed.zip'
+        $key = ./tools/ci/Get-VcpkgCacheKey.ps1 `
+          -ManifestPath vcpkg.json `
+          -GeneratorPath generate-thirdparty-projects.bat `
+          -VcpkgRoot vcpkg `
+          -ArchiveUrl $archiveUrl
+        ./tools/ci/Restore-VcpkgCache.ps1 `
+          -CacheRoot 'C:\moonlight-ci\cache\vcpkg' `
+          -Key $key `
+          -Destination (Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed') `
+          -WorkspaceRoot $env:GITHUB_WORKSPACE `
+          -ArchiveUrl $archiveUrl
 
     - name: List VCPKG packages
       run: dir .\vcpkg_installed
@@ -142,24 +158,13 @@ jobs:
     - name: Install VCPKG packages
       run: .\vcpkg\bootstrap-vcpkg.bat
 
-    - name: Cache vcpkg from-source builds
-      uses: actions/cache@v4
-      with:
-        path: |
-          third_party/moonlight-common-c/build/vcpkg_installed
-          libgamestream/build/vcpkg_installed
-          vcpkg/downloads
-        # generate-thirdparty-projects.bat points both sub-builds'
-        # VCPKG_MANIFEST_DIR at the single repo-root vcpkg.json (../.. from
-        # third_party/moonlight-common-c, .. from libgamestream), so that
-        # root manifest is what determines their installed contents; the
-        # batch file itself is hashed too since its CMake flags (triplet,
-        # UWP target) also shape the installed tree.
-        key: vcpkg-fromsource-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'generate-thirdparty-projects.bat') }}
-        restore-keys: |
-          vcpkg-fromsource-${{ runner.os }}-
-
     - name: Build third party tools
+      shell: cmd
+      env:
+        # The downloaded tree is for the app ABI. Manifest dependencies get a
+        # separate mutable tree, while compiled packages use the local binary cache.
+        VCPKG_INSTALLED_DIR: ${{ github.workspace }}\.ci-vcpkg-installed
+        VCPKG_BINARY_SOURCES: clear;files,C:\moonlight-ci\cache\vcpkg-binaries,readwrite
       run: .\generate-thirdparty-projects.bat
 
     - name: Set up NuGet
@@ -285,6 +290,10 @@ jobs:
 
     - name: Write build metadata
       shell: pwsh
+      env:
+        # Keep dispatch text in an environment variable so it is data, never
+        # parsed as part of this PowerShell program.
+        REF_NOTE: ${{ inputs.ref_note }}
       run: |
         $info = [ordered]@{
           version       = $env:PACKAGE_VERSION
@@ -293,7 +302,7 @@ jobs:
           sha           = $env:GITHUB_SHA
           ref           = $env:GITHUB_REF
           eventName     = $env:GITHUB_EVENT_NAME
-          refNote       = '${{ inputs.ref_note }}'
+          refNote       = $env:REF_NOTE
           builtAt       = (Get-Date).ToUniversalTime().ToString("o")
           configuration = $env:BUILD_CONFIGURATION
         }
@@ -308,27 +317,24 @@ jobs:
           Remove-Item -path cert.pfx
         }
 
-    - name: Keep a runner-local copy of the package
-      # Artifact storage shares the account billing lock that moved this job
-      # onto the self-hosted runner. The deploy job runs on that same runner,
-      # so a copy outside the job workspace (the deploy checkout cleans the
-      # workspace) lets it proceed when the upload below is refused. Only the
-      # newest five handoffs are kept.
-      if: runner.environment == 'self-hosted'
+    - name: Publish local package handoff
       shell: pwsh
       run: |
-        $root = Join-Path (Split-Path -Parent '${{ runner.workspace }}') '_handoff'
-        $dest = Join-Path $root $env:GITHUB_RUN_ID
-        New-Item -ItemType Directory -Path $dest -Force | Out-Null
-        Copy-Item -Path output\* -Destination $dest -Recurse -Force
-        Get-ChildItem -Path $root -Directory |
-          Sort-Object LastWriteTime -Descending |
-          Select-Object -Skip 5 |
-          Remove-Item -Recurse -Force
-        Write-Host "Package copied to $dest"
+        ./tools/ci/Publish-Handoff.ps1 `
+          -SourceDir output `
+          -HandoffRoot 'C:\moonlight-ci\handoff' `
+          -RunId $env:GITHUB_RUN_ID `
+          -RunAttempt $env:GITHUB_RUN_ATTEMPT `
+          -RetentionCount 10 `
+          -ExpectDeploy:($env:EXPECT_DEPLOY -eq 'true') `
+          -Repo $env:GITHUB_REPOSITORY
+      env:
+        EXPECT_DEPLOY: ${{ github.repository == 'ygordreyer/moonlight-xbox-plus' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.deploy == true) && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/topic/')) }}
+        GH_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
 
     - name: Upload artifacts
-      # Best effort while artifact storage is locked; the deploy job has a fallback.
+      if: github.event_name == 'workflow_dispatch' && inputs.upload_artifacts == true
       continue-on-error: true
       uses: actions/upload-artifact@v4
       with:
@@ -352,6 +358,7 @@ jobs:
       github.repository == 'ygordreyer/moonlight-xbox-plus' &&
       github.event_name != 'pull_request' &&
       (github.event_name != 'workflow_dispatch' || inputs.deploy == true)
+      && !(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/topic/'))
     concurrency:
       # There is exactly one physical console behind the xbox-lan runner;
       # serialize deploys across branches instead of letting them race.
@@ -361,28 +368,18 @@ jobs:
       - name: Checkout (for tools/xbox-deploy.ps1)
         uses: actions/checkout@v4
 
-      - name: Download build artifact
-        id: download
-        # Fails while artifact storage is locked; the next step then takes the
-        # runner-local copy the build job kept.
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: moonlight-uwp
-          path: artifact
-
-      - name: Use the runner-local package copy
-        if: steps.download.outcome != 'success'
+      - name: Use the local package handoff
+        id: handoff
         shell: pwsh
         run: |
-          $root = Join-Path (Split-Path -Parent '${{ runner.workspace }}') '_handoff'
-          $src = Join-Path $root $env:GITHUB_RUN_ID
-          if (-not (Test-Path (Join-Path $src 'build-info.json'))) {
-            throw "Artifact download failed and no runner-local package exists at $src"
-          }
-          New-Item -ItemType Directory -Path artifact -Force | Out-Null
-          Copy-Item -Path (Join-Path $src '*') -Destination artifact -Recurse -Force
-          Write-Host "Package taken from $src"
+          ./tools/ci/Use-Handoff.ps1 `
+            -HandoffRoot 'C:\moonlight-ci\handoff' `
+            -RunId $env:GITHUB_RUN_ID `
+            -RunAttempt $env:GITHUB_RUN_ATTEMPT `
+            -Destination artifact `
+            -WorkspaceRoot $env:GITHUB_WORKSPACE `
+            -ExpectedSha $env:GITHUB_SHA `
+            -GithubOutputPath $env:GITHUB_OUTPUT
 
       - name: Deploy to Xbox
         shell: pwsh
@@ -393,9 +390,39 @@ jobs:
             -Launch `
             -Screenshot
 
-      - name: Upload deploy output
+      - name: Record deploy summary in handoff
         if: always()
-        # Best effort for the same artifact storage reason as the build job.
+        shell: pwsh
+        env:
+          HANDOFF_PATH: ${{ steps.handoff.outputs.handoff_path }}
+        run: |
+          $handoff = $env:HANDOFF_PATH
+          if (-not $handoff -or -not (Test-Path -LiteralPath $handoff)) { Write-Warning 'No acquired handoff to finalize.'; exit 0 }
+          $lockPath = Join-Path (Split-Path -Parent $handoff) '.handoff.lock'
+          $deadline = (Get-Date).AddSeconds(60)
+          $lock = $null
+          while (-not $lock) {
+            try { $lock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+            catch [IO.IOException] { if ((Get-Date) -ge $deadline) { throw "Timed out waiting for handoff finalization lock: $lockPath" }; Start-Sleep -Seconds 1 }
+          }
+          try {
+          $deployOut = Join-Path $env:GITHUB_WORKSPACE 'deploy-out'
+          if (Test-Path -LiteralPath $deployOut) {
+            $handoffDeployOut = Join-Path $handoff 'deploy-out'
+            Remove-Item -LiteralPath $handoffDeployOut -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Path $handoffDeployOut -Force | Out-Null
+            Copy-Item -Path (Join-Path $deployOut '*') -Destination $handoffDeployOut -Recurse -Force
+            $summary = Join-Path $deployOut 'deploy-summary.json'
+            if (Test-Path -LiteralPath $summary) {
+              Copy-Item -LiteralPath $summary -Destination (Join-Path $handoff 'deploy-summary.json') -Force
+            }
+          }
+          Remove-Item -LiteralPath (Join-Path $handoff '.deploying') -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (Join-Path $handoff '.pending-deploy') -Force -ErrorAction SilentlyContinue
+          } finally { $lock.Dispose() }
+
+      - name: Upload deploy output
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.upload_artifacts == true
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:

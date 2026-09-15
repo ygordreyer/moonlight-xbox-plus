@@ -340,6 +340,7 @@ ASALocalRun/
 healthchecksdb
 /libgamestream/build
 vcpkg_installed
+.ci-vcpkg-installed/
 
 # Visual Studio Code
 .vscode/
