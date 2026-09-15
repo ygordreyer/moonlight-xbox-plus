@@ -375,6 +375,9 @@
     <ClCompile Include="Streaming\Pacer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+	<ClCompile Include="Streaming\PacingTrace.cpp">
+	  <Filter>Source Files</Filter>
+	</ClCompile>
     <ClCompile Include="Streaming\FrameQueue.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -473,6 +476,9 @@
     <ClInclude Include="Streaming\Pacer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+	<ClInclude Include="Streaming\PacingTrace.h">
+	  <Filter>Header Files</Filter>
+	</ClInclude>
     <ClInclude Include="Streaming\PacerCompat.h">
       <Filter>Header Files</Filter>
     </ClInclude>

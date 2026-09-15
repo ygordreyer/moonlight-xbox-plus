@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include "pch.h"
 #include <State/StreamConfiguration.h>
 #include "../Common/DeviceResources.h"
@@ -62,6 +64,8 @@ class MoonlightClient {
 	bool useSoftwareEncoder = false;
 	bool m_isHDR;
 	bool m_isRGBFull;
+	std::atomic<int> m_streamColorSpace{-1};
+	std::atomic<int> m_streamColorRange{-1};
 	uint16_t activeGamepadMask = 0;
 	Windows::Gaming::Input::GamepadReading m_lastGamepadReading[16];
 };

@@ -10,6 +10,7 @@
 #include "../Plot/ImGuiPlots.h"
 #include "FFmpegDecoder.h"
 #include "FrameQueue.h"
+#include "PacingTrace.h"
 #include "Utils.hpp"
 
 // Frame Pacing operation
@@ -69,6 +70,8 @@ void Pacer::deinit() {
 		m_VsyncThread.join();
 	}
 
+	flushPacingTrace(QpcNow(), true);
+
 	m_DeviceResources = nullptr;
 
 	if (m_CurrentFrame) {
@@ -99,6 +102,7 @@ void Pacer::init(const std::shared_ptr<DX::DeviceResources> &res, int streamFps,
 	m_VsyncIntervalQpc = 0;
 	m_LastSyncTarget = 0;
 	m_ewmaVsyncDriftQpc = MsToQpc(0.0001);
+	PacingTrace::instance().reset(QpcNow());
 
 	// Start FrameQueue so it's ready to receive new frames
 	FrameQueue::instance().setHighWaterMark(FRAME_QUEUE_HIGH);
@@ -127,15 +131,33 @@ void Pacer::vsyncHardware() {
 	Utils::Logf("vsyncHardware stats thread started, qpcFreq=%lld ticksPerMs=%lld\n",
 	            QpcFreq(), MsToQpc(1.0));
 
+	int64_t lastWakeQpc = 0;
 	while (!stopping()) {
 		// All this thread does is wake up every vsync and record the precise vsync QPC the system
 		// tracks. This data is several frames out of date but it's enough to
 		// very precisely time present calls and to determine the vsync interval.
 		m_DeviceResources->GetDXGIOutput()->WaitForVBlank();
+		const int64_t wakeQpc = QpcNow();
+		if (lastWakeQpc != 0) PacingTrace::instance().observeVblankWait(wakeQpc - lastWakeQpc);
+		lastWakeQpc = wakeQpc;
 		updateFrameStats();
 	}
 
 	Utils::Logf("vsyncHardware stats thread stopped\n");
+}
+
+int64_t Pacer::vsyncIntervalQpcLocked() {
+	std::scoped_lock<std::mutex> lock(m_FrameStatsLock);
+	return m_VsyncIntervalQpc;
+}
+
+const char* Pacer::pacingModeLabel() {
+	return m_FramePacingImmediate.load(std::memory_order_acquire) ? "immediate" : "display-locked";
+}
+
+void Pacer::flushPacingTrace(int64_t nowQpc, bool final) {
+	PacingTrace::instance().flush(nowQpc, pacingModeLabel(), m_FrameCadence.streamFps(),
+		vsyncIntervalQpcLocked(), final);
 }
 
 // based on mpv's d3d11_get_vsync()
@@ -225,6 +247,10 @@ void Pacer::waitForFrame(double timeoutMs) {
 	FrameQueue::instance().waitForEnqueue(queueHas, timeoutMs);
 }
 
+void Pacer::flushPacingTraceAfterPresent(int64_t nowQpc) {
+	if (PacingTrace::instance().windowElapsed(nowQpc)) flushPacingTrace(nowQpc, false);
+}
+
 // called by render thread
 bool Pacer::renderOnMainThread(std::shared_ptr<VideoRenderer> &sceneRenderer) {
 	if (!running()) return false;
@@ -251,14 +277,17 @@ bool Pacer::renderModeImmediate(std::shared_ptr<VideoRenderer> &sceneRenderer) {
 
 	// if we're a frame behind, catch up
 	int queueDepth = FrameQueue::instance().count();
+	int dropped = 0;
 	if (queueDepth > FRAME_QUEUE_LOW) {
 		AVFrame *newFrame2 = FrameQueue::instance().dequeue();
 		if (newFrame2) {
 			av_frame_free(&newFrame);
 			newFrame = newFrame2;
+			dropped = 1;
 			ImGuiPlots::instance().observeFloat(PLOT_DROPPED_PACER, 1.0);
 		}
 	}
+	PacingTrace::instance().observeRender(queueDepth + 1, dropped);
 
 	if (m_CurrentFrame) {
 		av_frame_free(&m_CurrentFrame);
@@ -301,6 +330,7 @@ bool Pacer::renderModeDisplayLocked(std::shared_ptr<VideoRenderer> &sceneRendere
 		advanceCount++;
 	}
 
+	int dropped = 0;
 	for (int i = 0; i < advanceCount; ++i) {
 		AVFrame *newFrame = FrameQueue::instance().dequeue();
 		if (!newFrame) {
@@ -310,12 +340,14 @@ bool Pacer::renderModeDisplayLocked(std::shared_ptr<VideoRenderer> &sceneRendere
 		if (m_CurrentFrame) {
 			if (i > 0) {
 				// advanceCount was > 1, so this is a dropped frame
+				dropped++;
 				ImGuiPlots::instance().observeFloat(PLOT_DROPPED_PACER, 1.0);
 			}
 			av_frame_free(&m_CurrentFrame);
 		}
 		m_CurrentFrame = newFrame;
 	}
+	PacingTrace::instance().observeRender(queueDepth, dropped);
 
 	if (!m_CurrentFrame) {
 		// No frame available yet
@@ -385,8 +417,10 @@ void Pacer::submitFrame(AVFrame *frame) {
 		Stats::instance().SubmitDroppedFrame(dropCount);
 	}
 
+	const int queueDepth = static_cast<int>(FrameQueue::instance().count());
+	PacingTrace::instance().observeEnqueue(queueDepth, dropCount);
 	ImGuiPlots::instance().observeFloat(PLOT_DROPPED_PACER, (float)dropCount);
-	float avgQueueSize = ImGuiPlots::instance().observeFloatReturnAvg(PLOT_QUEUED_FRAMES, (float)FrameQueue::instance().count());
+	float avgQueueSize = ImGuiPlots::instance().observeFloatReturnAvg(PLOT_QUEUED_FRAMES, (float)queueDepth);
 	Stats::instance().SubmitAvgQueueSize(avgQueueSize);
 }
 

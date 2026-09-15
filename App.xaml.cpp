@@ -23,6 +23,23 @@ using namespace Windows::UI::Xaml::Input;
 using namespace Windows::UI::Xaml::Interop;
 using namespace Windows::UI::Xaml::Media;
 using namespace Windows::UI::Xaml::Navigation;
+
+static void LogStartupEnvironment()
+{
+	try {
+		auto package = Windows::ApplicationModel::Package::Current;
+		const auto fullName = moonlight_xbox_dx::Utils::PlatformStringToStdString(package->Id->FullName);
+		const auto limitMb = Windows::System::MemoryManager::AppMemoryUsageLimit / (1024ull * 1024ull);
+		const auto usageMb = Windows::System::MemoryManager::AppMemoryUsage / (1024ull * 1024ull);
+		moonlight_xbox_dx::Utils::Logf("Startup: package=%s dev=%d Xbox=%d XboxSeries=%d memoryLimitMb=%llu memoryUsageMb=%llu\n",
+			fullName.c_str(), package->IsDevelopmentMode ? 1 : 0, IsXbox() ? 1 : 0, IsXboxSeries() ? 1 : 0,
+			static_cast<unsigned long long>(limitMb), static_cast<unsigned long long>(usageMb));
+	}
+	catch (...) {
+		moonlight_xbox_dx::Utils::Log("Startup: environment unavailable\n");
+	}
+}
+
 /// <summary>
 /// Initializes the singleton application object.  This is the first line of authored code
 /// executed, and as such is the logical equivalent of main() or WinMain().
@@ -50,7 +67,9 @@ void App::OnLaunched(Windows::ApplicationModel::Activation::LaunchActivatedEvent
 // 		DebugSettings->EnableFrameRateCounter = true;
 // 	}
 // #endif
+	moonlight_xbox_dx::Utils::InitFileLog();
 	moonlight_xbox_dx::Utils::Log("Hello from Moonlight!\n");
+	LogStartupEnvironment();
 	auto rootFrame = dynamic_cast<Frame^>(Window::Current->Content);
 
 	// Do not repeat app initialization when the Window already has content,

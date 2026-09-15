@@ -13,6 +13,7 @@ namespace moonlight_xbox_dx {
 		void Log(const char* msg);
 		void Log(const std::string_view& msg);
 		void Logf(const char* msg, ...);
+		void InitFileLog();
 
 		std::vector<std::wstring> GetLogLines();
 		Platform::String^ StringFromChars(const char* chars);

@@ -101,6 +101,7 @@ bool VideoRenderer::Render(AVFrame *frame) {
 	}
 
 	auto *ctx = m_deviceResources->GetD3DDeviceContext();
+	LogFrameColorState(frame);
 
 #if defined(_DEBUG)
 	Pacer::instance().StartGpuTimerForFrame();
@@ -178,13 +179,17 @@ bool VideoRenderer::Render(AVFrame *frame) {
 			colorspace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
 		}
 
-		UINT colorSpaceSupport = 0;
-		if (colorspace && SUCCEEDED(m_deviceResources->GetSwapChain()->CheckColorSpaceSupport(colorspace, &colorSpaceSupport)) && (colorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT)) {
-			DX::ThrowIfFailed(m_deviceResources->GetSwapChain()->SetColorSpace1(colorspace));
+		if (colorspace) {
+			auto applied = m_deviceResources->ApplyColorSpace(colorspace);
+			if (applied.attempted) {
+				DX::ThrowIfFailed(applied.setHr);
+			}
+			if (applied.Succeeded()) {
 			Utils::Logf("Colorspace changed to %s\n",
 			            colorspace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
 			                ? "DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020"
 			                : "DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709");
+			}
 		}
 
 		m_LastColorTrc = frame->color_trc;
@@ -628,6 +633,31 @@ bool VideoRenderer::hasFrameFormatChanged(const AVFrame* frame) {
 	m_LastColorSpace = frame->colorspace;
 	m_LastChromaLocation = frame->chroma_location;
 	return true;
+}
+
+static const char* SafeAvName(const char* name) {
+	return name ? name : "unknown";
+}
+
+void VideoRenderer::LogFrameColorState(const AVFrame* frame) {
+	const AVPixelFormat format = getFrameSwPixelFormat(frame);
+	if (frame->color_trc == m_LoggedColorTrc && frame->color_primaries == m_LoggedColorPrimaries &&
+		frame->colorspace == m_LoggedColorSpace && frame->color_range == m_LoggedColorRange &&
+		format == m_LoggedPixelFormat && frame->width == m_LoggedFrameWidth && frame->height == m_LoggedFrameHeight) return;
+
+	Utils::Logf("Frame color state: trc=%d(%s) primaries=%d(%s) space=%d(%s) range=%d(%s) format=%d(%s) size=%dx%d\n",
+		static_cast<int>(frame->color_trc), SafeAvName(av_color_transfer_name(frame->color_trc)),
+		static_cast<int>(frame->color_primaries), SafeAvName(av_color_primaries_name(frame->color_primaries)),
+		static_cast<int>(frame->colorspace), SafeAvName(av_color_space_name(frame->colorspace)),
+		static_cast<int>(frame->color_range), SafeAvName(av_color_range_name(frame->color_range)),
+		static_cast<int>(format), SafeAvName(av_get_pix_fmt_name(format)), frame->width, frame->height);
+	m_LoggedColorTrc = frame->color_trc;
+	m_LoggedColorPrimaries = frame->color_primaries;
+	m_LoggedColorSpace = frame->colorspace;
+	m_LoggedColorRange = frame->color_range;
+	m_LoggedPixelFormat = format;
+	m_LoggedFrameWidth = frame->width;
+	m_LoggedFrameHeight = frame->height;
 }
 
 void VideoRenderer::bindColorConversion(AVFrame* frame, D3D11_TEXTURE2D_DESC frameDesc)

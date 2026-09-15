@@ -219,8 +219,8 @@ void DX::DeviceResources::CreateWindowSizeDependentResources()
 			0
 			);
 
-		Utils::Logf("m_swapChain->ResizeBuffers(%d x %d)\n",
-			lround(m_d3dRenderTargetSize.Width), lround(m_d3dRenderTargetSize.Height));
+		Utils::Logf("m_swapChain->ResizeBuffers(%d x %d) hr=0x%08X\n",
+			lround(m_d3dRenderTargetSize.Width), lround(m_d3dRenderTargetSize.Height), static_cast<unsigned int>(hr));
 
 		if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
 		{
@@ -489,7 +489,8 @@ void DX::DeviceResources::HandleDeviceLost()
 
 	m_swapChain = nullptr;
 
-	Utils::Log("HandleDeviceLost()\n");
+	const HRESULT removedReason = m_d3dDevice != nullptr ? m_d3dDevice->GetDeviceRemovedReason() : S_OK;
+	Utils::Logf("HandleDeviceLost(): device removed reason 0x%08X\n", static_cast<unsigned int>(removedReason));
 
 	if (m_deviceNotify != nullptr)
 	{
@@ -546,6 +547,28 @@ void DX::DeviceResources::Present()
 	else {
 		DX::ThrowIfFailed(hr);
 	}
+}
+
+DX::ColorSpaceApplyResult DX::DeviceResources::ApplyColorSpace(DXGI_COLOR_SPACE_TYPE space, bool force)
+{
+	ColorSpaceApplyResult result{};
+	result.requested = space;
+	result.checkHr = E_POINTER;
+	result.setHr = S_OK;
+	if (m_swapChain == nullptr) {
+		Utils::Logf("ApplyColorSpace(space=%d force=%d) skipped: no swap chain\n", static_cast<int>(space), force ? 1 : 0);
+		return result;
+	}
+
+	result.checkHr = m_swapChain->CheckColorSpaceSupport(space, &result.support);
+	const bool supported = SUCCEEDED(result.checkHr) &&
+		(result.support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) != 0;
+	result.attempted = force || supported;
+	if (result.attempted) result.setHr = m_swapChain->SetColorSpace1(space);
+	Utils::Logf("ApplyColorSpace(space=%d force=%d) check=0x%08X support=0x%X attempted=%d set=0x%08X\n",
+		static_cast<int>(space), force ? 1 : 0, static_cast<unsigned int>(result.checkHr),
+		static_cast<unsigned int>(result.support), result.attempted ? 1 : 0, static_cast<unsigned int>(result.setHr));
+	return result;
 }
 
 int DX::DeviceResources::uwp_get_height()

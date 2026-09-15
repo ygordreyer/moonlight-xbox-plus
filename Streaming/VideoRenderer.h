@@ -57,6 +57,7 @@ namespace moonlight_xbox_dx
 		void getFramePremultipliedCscConstants(const AVFrame* frame, std::array<float, 9> &cscMatrix, std::array<float, 3> &offsets);
 		void getFrameChromaCositingOffsets(const AVFrame* frame, std::array<float, 2> &chromaOffsets);
 		bool hasFrameFormatChanged(const AVFrame* frame);
+		void LogFrameColorState(const AVFrame* frame);
 
 		// Cached pointer to device resources.
 		std::shared_ptr<DX::DeviceResources> m_deviceResources;
@@ -95,6 +96,13 @@ namespace moonlight_xbox_dx
 		AVColorTransferCharacteristic m_LastColorTrc = AVCOL_TRC_UNSPECIFIED;
 		AVColorSpace m_LastColorSpace = AVCOL_SPC_UNSPECIFIED;
 		AVChromaLocation m_LastChromaLocation = AVCHROMA_LOC_UNSPECIFIED;
+		AVColorTransferCharacteristic m_LoggedColorTrc = AVCOL_TRC_UNSPECIFIED;
+		AVColorPrimaries m_LoggedColorPrimaries = AVCOL_PRI_UNSPECIFIED;
+		AVColorSpace m_LoggedColorSpace = AVCOL_SPC_UNSPECIFIED;
+		AVColorRange m_LoggedColorRange = AVCOL_RANGE_UNSPECIFIED;
+		AVPixelFormat m_LoggedPixelFormat = AV_PIX_FMT_NONE;
+		int m_LoggedFrameWidth = 0;
+		int m_LoggedFrameHeight = 0;
 
 		// Cache of SRVs over the ffmpeg decoder's array texture(s). Keyed by the
 		// underlying ID3D11Texture2D*; the inner vector is indexed by array slice,

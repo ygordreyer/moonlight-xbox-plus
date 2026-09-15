@@ -59,6 +59,7 @@ void logDisplayMode(const char *str, HdmiDisplayMode ^ mode) {
 // switches to the HDR or SDR version of the current display mode, per the enabled argument
 // Returns false if the requested state was not set for some reason.
 bool MoonlightClient::SetDisplayHDR(bool enabled, const SS_HDR_METADATA &sunshineHdrMetadata) {
+	Utils::Logf("SetDisplayHDR(%d)\n", enabled ? 1 : 0);
 	HdmiDisplayInformation ^ hdmi = HdmiDisplayInformation::GetForCurrentView();
 	if (!hdmi) {
 		return false;
@@ -164,8 +165,11 @@ bool MoonlightClient::SetDisplayHDR(bool enabled, const SS_HDR_METADATA &sunshin
 			m_isHDR = false;
 			return true;
 		}
+		Utils::Logf("SetDisplayHDR(%d): requested mode did not match reported HDR state %d\n",
+			enabled ? 1 : 0, current->IsSmpte2084Supported ? 1 : 0);
 	} else {
 		Utils::Log("SetDisplayHDR(): Error switching display mode.\n");
+		logDisplayMode("SetDisplayHDR(): failed switch left", hdmi->GetCurrentDisplayMode());
 	}
 
 	return false;
@@ -322,6 +326,11 @@ int MoonlightClient::StartStreaming(std::shared_ptr<DX::DeviceResources> res, St
 	AUDIO_RENDERER_CALLBACKS aCallbacks = AudioPlayer::getDecoder();
 
 	int k = LiStartConnection(&serverData.serverInfo, &config, &callbacks, &rCallbacks, &aCallbacks, NULL, 0, NULL, 0);
+	m_streamColorSpace.store(config.colorSpace, std::memory_order_release);
+	m_streamColorRange.store(config.colorRange, std::memory_order_release);
+	Utils::Logf("Stream start: LiStartConnection=%d, colorSpace=%d, colorRange=%d, formats=0x%X, %dx%d@%d, HDR=%d\n",
+		k, config.colorSpace, config.colorRange, static_cast<unsigned int>(config.supportedVideoFormats),
+		config.width, config.height, config.fps, sConfig->enableHDR ? 1 : 0);
 	if (k != 0) {
 		this->OnFailed(0, k, "Connection failed");
 	}
@@ -341,6 +350,8 @@ int MoonlightClient::StartStreaming(std::shared_ptr<DX::DeviceResources> res, St
 }
 
 void MoonlightClient::StopStreaming() {
+	Utils::Logf("Stream stop: colorSpace=%d, colorRange=%d, displayHDR=%d\n",
+		m_streamColorSpace.load(std::memory_order_acquire), m_streamColorRange.load(std::memory_order_acquire), m_isHDR ? 1 : 0);
 	LiStopConnection();
 }
 

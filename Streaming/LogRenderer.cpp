@@ -33,12 +33,10 @@ void LogRenderer::Update(DX::StepTimer const& timer)
 	if (m_visible && timer.GetTotalSeconds() - lastUpdateSeconds >= 1.0) {
 		m_console->Clear();
 
-		Utils::logMutex.lock();
 		std::vector<std::wstring> lines = Utils::GetLogLines();
 		for (std::wstring line : lines) {
 			m_console->Write(line.c_str());
 		}
-		Utils::logMutex.unlock();
 
 		lastUpdateSeconds = timer.GetTotalSeconds();
 	}

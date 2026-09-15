@@ -28,6 +28,7 @@ class Pacer {
 	bool getPacingImmediate();
 	void setPacingImmediate(bool framePacingImmediate);
 	void waitForFrame(double timeoutMs);
+	void flushPacingTraceAfterPresent(int64_t nowQpc);
 	bool renderOnMainThread(std::shared_ptr<moonlight_xbox_dx::VideoRenderer> &sceneRenderer);
 	bool waitBeforePresent(int64_t deadline);
 	int64_t getCurrentFramePts();
@@ -55,6 +56,9 @@ class Pacer {
 	bool renderModeDisplayLocked(std::shared_ptr<moonlight_xbox_dx::VideoRenderer> &sceneRenderer);
 	void vsyncHardware();
 	void updateFrameStats();
+	int64_t vsyncIntervalQpcLocked();
+	const char* pacingModeLabel();
+	void flushPacingTrace(int64_t nowQpc, bool final);
 
 	std::shared_ptr<DX::DeviceResources> m_DeviceResources;
 	std::thread m_VsyncThread;

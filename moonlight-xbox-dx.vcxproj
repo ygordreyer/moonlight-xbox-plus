@@ -354,6 +354,7 @@
     <ClInclude Include="Streaming\FrameCadence.h" />
     <ClInclude Include="Streaming\FrameQueue.h" />
     <ClInclude Include="Streaming\Pacer.h" />
+	<ClInclude Include="Streaming\PacingTrace.h" />
     <ClInclude Include="Streaming\PacerCompat.h" />
     <ClInclude Include="Streaming\VideoRenderer.h" />
     <ClInclude Include="Streaming\LogRenderer.h" />
@@ -496,6 +497,7 @@
     <ClCompile Include="Streaming\FrameQueue.cpp" />
     <ClCompile Include="Streaming\LogRenderer.cpp" />
     <ClCompile Include="Streaming\Pacer.cpp" />
+	<ClCompile Include="Streaming\PacingTrace.cpp" />
     <ClCompile Include="Streaming\VideoRenderer.cpp" />
     <ClCompile Include="State\MDNSHandler.cpp" />
     <ClCompile Include="Pages\HostSettingsPage.xaml.cpp">

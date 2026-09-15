@@ -12,6 +12,16 @@ namespace DX
 		virtual void OnDeviceRestored() = 0;
 	};
 
+	struct ColorSpaceApplyResult
+	{
+		DXGI_COLOR_SPACE_TYPE requested;
+		HRESULT checkHr;
+		UINT support;
+		bool attempted;
+		HRESULT setHr;
+		bool Succeeded() const { return attempted && SUCCEEDED(setHr); }
+	};
+
 	// Controls all the DirectX device resources.
 	class DeviceResources
 	{
@@ -27,6 +37,7 @@ namespace DX
 		void RegisterDeviceNotify(IDeviceNotify* deviceNotify);
 		void Trim();
 		void Present();
+		ColorSpaceApplyResult ApplyColorSpace(DXGI_COLOR_SPACE_TYPE space, bool force = false);
 		void GetUWPPixelDimensions(uint32_t *width, uint32_t *height);
 		double GetUWPRefreshRate();
 		static int uwp_get_width();

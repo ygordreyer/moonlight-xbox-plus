@@ -4,6 +4,7 @@
 #include <Pages/HostSelectorPage.xaml.h>
 #include <Pages/StreamPage.xaml.h>
 #include <Streaming\FFMpegDecoder.h>
+#include <Streaming\PacingTrace.h>
 #include "../Plot/ImGuiPlots.h"
 #include "Common\DirectXHelper.h"
 #include "State\GamepadState.h"
@@ -268,12 +269,15 @@ void moonlight_xbox_dxMain::StartRenderLoop() {
 					// and no frame was available, we don't call Present here and the
 					// previous frame will be re-displayed by DWM. On Xbox One this may cause
 					// corrupted frames or tearing.
+					Pacer::instance().flushPacingTraceAfterPresent(QpcNow());
 					continue;
 				}
 
+				int64_t presentQpc = 0;
 				{
 					// lock is required around Present
 					auto guard = FFMpegDecoder::Lock();
+					presentQpc = QpcNow();
 					m_deviceResources->Present();
 				}
 
@@ -290,6 +294,9 @@ void moonlight_xbox_dxMain::StartRenderLoop() {
 					lastFramePts = currentFramePts;
 					isRepeatFrame = false;
 				}
+				const bool traceHitDeadline = presentQpc <= deadline;
+				PacingTrace::instance().observePresent(presentQpc, !isRepeatFrame, traceHitDeadline);
+				Pacer::instance().flushPacingTraceAfterPresent(QpcNow());
 
 				// Weighted avg of time spent in Render(), more weight given to a slower render time
 				// If we missed our present deadline this frame, aggressively weight this higher so maxWaitMs is smaller.
