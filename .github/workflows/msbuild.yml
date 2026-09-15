@@ -80,7 +80,8 @@ env:
 
 jobs:
   build:
-    runs-on: windows-2022
+    # TEMPORARY: the account billing lock refuses hosted jobs; revert to windows-2022 once https://github.com/settings/billing is unlocked and one hosted run is green (docs/PLAN.md section 6.6)
+    runs-on: [self-hosted, xbox-lan]
     env:
       # secrets is not a valid context inside if:; surface the presence of
       # the signing secret as a job env string and test that instead.
@@ -158,6 +159,9 @@ jobs:
 
     - name: Build third party tools
       run: .\generate-thirdparty-projects.bat
+
+    - name: Set up NuGet
+      uses: nuget/setup-nuget@v2
 
     - name: Restore NuGet
       run: nuget restore ${{env.SOLUTION_FILE_PATH}}
