@@ -348,3 +348,10 @@ vcpkg_installed
 .stfolder/
 .stignore
 
+# Fork CI/CD: msbuild.yml build and deploy job outputs (docs/PLAN.md m7)
+cert.pfx
+output/
+build-info.json
+deploy-out/
+deploy-*.json
+
