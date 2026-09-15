@@ -42,9 +42,14 @@
     None of these calls are exercised in -DryRun mode.
 
 .PARAMETER ArtifactDir
-    Directory containing the built package: a .msixbundle/.msix at its root
-    and, optionally, a Dependencies\<arch>\*.appx tree (msbuild's
-    /p:AppxPackageDir layout).
+    Directory containing the built package, searched recursively: msbuild's
+    /p:AppxPackageDir layout puts the .msixbundle/.msix one level down, in
+    <name>_<version>_Test\, with a Dependencies tree beside it (neutral
+    *.appx directly under Dependencies, then one subfolder per architecture).
+
+.PARAMETER ConsoleArchitecture
+    Which Dependencies\<arch> subfolder to install alongside the package.
+    Default x64, the CPU of every Xbox One and Xbox Series console.
 
 .PARAMETER ConsoleAddress
     Device Portal base URL, e.g. https://192.168.1.50:11443. Overrides the
@@ -109,6 +114,8 @@
 param(
     [Parameter(Mandatory)]
     [string]$ArtifactDir,
+    [ValidateSet('x64', 'x86', 'arm', 'arm64')]
+    [string]$ConsoleArchitecture = 'x64',
 
     [string]$ConsoleAddress,
     [string]$Username,
@@ -162,34 +169,63 @@ function ConvertTo-TruncatedErrorBody {
 }
 
 function Resolve-DeployArtifact {
-    param([Parameter(Mandatory)] [string]$ArtifactDir)
+    param(
+        [Parameter(Mandatory)] [string]$ArtifactDir,
+        [Parameter(Mandatory)] [string]$ConsoleArchitecture
+    )
 
     if (-not (Test-Path -LiteralPath $ArtifactDir -PathType Container)) {
         throw "ArtifactDir not found or not a directory: $ArtifactDir"
     }
 
-    $artifactFull = (Get-Item -LiteralPath $ArtifactDir).FullName.TrimEnd('\', '/')
-    $depthOf = { (($_.DirectoryName.TrimEnd('\', '/').Substring($artifactFull.Length)) -split '[\\/]' | Where-Object { $_ }).Count }
-    $notDependency = { ($_.FullName.Substring($artifactFull.Length) -split '[\\/]') -notcontains 'Dependencies' }
-
-    $bundle = Get-ChildItem -LiteralPath $ArtifactDir -Filter '*.msixbundle' -File -Recurse -ErrorAction SilentlyContinue |
-        Where-Object $notDependency |
-        Sort-Object $depthOf |
-        Select-Object -First 1
-    if (-not $bundle) {
-        $bundle = Get-ChildItem -LiteralPath $ArtifactDir -Filter '*.msix' -File -Recurse -ErrorAction SilentlyContinue |
-            Where-Object $notDependency |
-            Sort-Object $depthOf |
+    # msbuild's /p:AppxPackageDir layout puts the package one level below the
+    # artifact root (<name>_<version>_Test\<name>_<version>_<arch>.msixbundle)
+    # with its Dependencies tree beside it, so search recursively, skip
+    # anything under a Dependencies folder, and take the shallowest match.
+    # The segment list is wrapped in @(): a single segment would otherwise
+    # collapse to a scalar string, whose .Count Set-StrictMode rejects.
+    $artifactRoot = (Get-Item -LiteralPath $ArtifactDir).FullName
+    $bundle = $null
+    foreach ($pattern in '*.msixbundle', '*.msix') {
+        $match = Get-ChildItem -LiteralPath $ArtifactDir -Filter $pattern -File -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $segments = @([System.IO.Path]::GetRelativePath($artifactRoot, $_.FullName) -split '[\\/]' | Where-Object { $_ })
+                [pscustomobject]@{
+                    File              = $_
+                    Depth             = $segments.Count
+                    UnderDependencies = ($segments -contains 'Dependencies')
+                }
+            } |
+            Where-Object { -not $_.UnderDependencies } |
+            Sort-Object Depth, { $_.File.FullName } |
             Select-Object -First 1
+        if ($match) {
+            $bundle = $match.File
+            break
+        }
     }
     if (-not $bundle) {
         throw "No .msixbundle or .msix package found under $ArtifactDir"
     }
 
+    # Dependencies live beside the package, read the way Add-AppDevPackage.ps1
+    # in that same folder reads them: architecture-neutral packages directly
+    # under Dependencies plus the one subfolder matching the console's CPU.
+    # The other architecture folders are never applicable to the console.
     $dependencies = @()
-    $depDir = Join-Path $ArtifactDir 'Dependencies'
+    $depDir = Join-Path $bundle.DirectoryName 'Dependencies'
     if (Test-Path -LiteralPath $depDir -PathType Container) {
-        $dependencies = @(Get-ChildItem -LiteralPath $depDir -Recurse -File -Include '*.appx', '*.msix' -ErrorAction SilentlyContinue)
+        $dependencyDirs = @($depDir)
+        $archDir = Join-Path $depDir $ConsoleArchitecture
+        if (Test-Path -LiteralPath $archDir -PathType Container) {
+            $dependencyDirs += $archDir
+        }
+        $dependencies = @(
+            foreach ($dir in $dependencyDirs) {
+                Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Extension -in '.appx', '.msix' }
+            }
+        )
     }
 
     [pscustomobject]@{
@@ -588,7 +624,7 @@ $summary = [ordered]@{
 if (-not $OutputDir) { $OutputDir = Join-Path $ArtifactDir 'deploy-out' }
 
 try {
-    $artifact = Resolve-DeployArtifact -ArtifactDir $ArtifactDir
+    $artifact = Resolve-DeployArtifact -ArtifactDir $ArtifactDir -ConsoleArchitecture $ConsoleArchitecture
     $summary.package = $artifact.Package.Name
     $summary.dependencies = @($artifact.Dependencies | ForEach-Object { $_.Name })
 
