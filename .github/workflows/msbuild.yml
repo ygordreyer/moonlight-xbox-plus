@@ -308,7 +308,28 @@ jobs:
           Remove-Item -path cert.pfx
         }
 
+    - name: Keep a runner-local copy of the package
+      # Artifact storage shares the account billing lock that moved this job
+      # onto the self-hosted runner. The deploy job runs on that same runner,
+      # so a copy outside the job workspace (the deploy checkout cleans the
+      # workspace) lets it proceed when the upload below is refused. Only the
+      # newest five handoffs are kept.
+      if: runner.environment == 'self-hosted'
+      shell: pwsh
+      run: |
+        $root = Join-Path (Split-Path -Parent '${{ runner.workspace }}') '_handoff'
+        $dest = Join-Path $root $env:GITHUB_RUN_ID
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+        Copy-Item -Path output\* -Destination $dest -Recurse -Force
+        Get-ChildItem -Path $root -Directory |
+          Sort-Object LastWriteTime -Descending |
+          Select-Object -Skip 5 |
+          Remove-Item -Recurse -Force
+        Write-Host "Package copied to $dest"
+
     - name: Upload artifacts
+      # Best effort while artifact storage is locked; the deploy job has a fallback.
+      continue-on-error: true
       uses: actions/upload-artifact@v4
       with:
         name: moonlight-uwp
@@ -341,10 +362,27 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download build artifact
+        id: download
+        # Fails while artifact storage is locked; the next step then takes the
+        # runner-local copy the build job kept.
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: moonlight-uwp
           path: artifact
+
+      - name: Use the runner-local package copy
+        if: steps.download.outcome != 'success'
+        shell: pwsh
+        run: |
+          $root = Join-Path (Split-Path -Parent '${{ runner.workspace }}') '_handoff'
+          $src = Join-Path $root $env:GITHUB_RUN_ID
+          if (-not (Test-Path (Join-Path $src 'build-info.json'))) {
+            throw "Artifact download failed and no runner-local package exists at $src"
+          }
+          New-Item -ItemType Directory -Path artifact -Force | Out-Null
+          Copy-Item -Path (Join-Path $src '*') -Destination artifact -Recurse -Force
+          Write-Host "Package taken from $src"
 
       - name: Deploy to Xbox
         shell: pwsh
@@ -357,6 +395,8 @@ jobs:
 
       - name: Upload deploy output
         if: always()
+        # Best effort for the same artifact storage reason as the build job.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: deploy-out
