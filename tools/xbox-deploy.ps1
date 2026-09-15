@@ -254,22 +254,31 @@ function Resolve-DeployCredential {
 
     if (Test-Path -LiteralPath $CredentialsPath -PathType Leaf) {
         try {
-            $raw = Get-Content -LiteralPath $CredentialsPath -Raw | ConvertFrom-Json
+            $raw = Get-Content -LiteralPath $CredentialsPath -Raw | ConvertFrom-Json -ErrorAction Stop
         } catch {
-            throw "Failed to parse credentials file at $CredentialsPath as JSON: $($_.Exception.Message)"
+            # Parser diagnostics may echo input content. Credential files are secret.
+            throw "Failed to parse credentials file at $CredentialsPath as JSON."
         }
 
-        $addr = if ($ConsoleAddress) { $ConsoleAddress } else { $raw.consoleAddress }
-        $user = if ($Username) { $Username } else { $raw.username }
+        $getField = {
+            param($Object, [string]$Name)
+            if ($null -eq $Object) { return $null }
+            $property = $Object.PSObject.Properties[$Name]
+            if ($property) { return $property.Value }
+            return $null
+        }
+        $addr = if ($ConsoleAddress) { $ConsoleAddress } else { & $getField $raw 'consoleAddress' }
+        $user = if ($Username) { $Username } else { & $getField $raw 'username' }
         $securePass = $Password
         if (-not $securePass) {
-            if (-not $raw.password) {
+            $plainPass = & $getField $raw 'password'
+            if (-not $plainPass) {
                 throw "Credentials file $CredentialsPath is missing a 'password' field."
             }
             # Converted straight to SecureString; the plaintext field on $raw
             # is never logged and $raw goes out of scope at the end of this
             # function.
-            $securePass = ConvertTo-SecureString -String $raw.password -AsPlainText -Force
+            $securePass = ConvertTo-SecureString -String ([string]$plainPass) -AsPlainText -Force
         }
 
         if (-not $addr -or -not $user -or -not $securePass) {
@@ -536,45 +545,83 @@ function Save-DevicePortalLocalState {
         [Parameter(Mandatory)] [string]$DestinationDir
     )
 
-    $listUri = "$($DpSession.BaseUri)/api/filesystem/apps/files?knownfolderid=LocalAppData&packagefullname=$([Uri]::EscapeDataString($PackageFullName))&path=%5CLocalState"
-    $params = @{
-        Uri         = $listUri
-        WebSession  = $DpSession.Session
-        Method      = 'Get'
-        Headers     = @{ 'X-CSRF-Token' = $DpSession.CsrfToken }
-        ErrorAction = 'Stop'
-        TimeoutSec  = 30
+    function Get-PortalItemField {
+        param($Item, [string]$Name)
+        if ($null -eq $Item) { return $null }
+        $property = $Item.PSObject.Properties[$Name]
+        if ($property) { return $property.Value }
+        return $null
     }
-    if ($SkipCertCheck) { $params['SkipCertificateCheck'] = $true }
-
-    $resp = Invoke-RestMethod @params
-    $files = @($resp.Items | Where-Object { -not $_.Type -or $_.Type -ne 'Folder' })
-
-    if (-not $files -or $files.Count -eq 0) {
-        Write-DeployLog 'No LocalState files found to pull.' -Level Warn
-        return @()
+    function Test-PortalDirectory {
+        param($Item)
+        $type = Get-PortalItemField $Item 'Type'
+        if ($type -is [string] -and ($type -eq 'Folder' -or $type -eq 'Directory')) { return $true }
+        $number = $type -as [int]
+        return $null -ne $number -and (($number -band 16) -ne 0)
+    }
+    function Assert-PortalChildName {
+        param([string]$Name)
+        if ([string]::IsNullOrWhiteSpace($Name) -or $Name -in '.', '..' -or $Name.EndsWith('.') -or $Name.EndsWith(' ') -or [IO.Path]::GetFileName($Name) -ne $Name -or $Name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { throw "Refusing to write remote LocalState file name '$Name': not a plain Windows file name." }
+        $stem = [IO.Path]::GetFileNameWithoutExtension($Name).TrimEnd('.', ' ').ToUpperInvariant()
+        if ($stem -in @('CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9')) { throw "Refusing reserved Windows LocalState file name '$Name'." }
+    }
+    function Assert-NoReparsePathComponent {
+        param([string]$Path)
+        $fullPath = [IO.Path]::GetFullPath($Path); $root = [IO.Path]::GetPathRoot($fullPath); $current = $root
+        foreach ($segment in $fullPath.Substring($root.Length).TrimStart('\', '/') -split '[\\/]') {
+            if (-not $segment) { continue }; $current = Join-Path $current $segment
+            if (Test-Path -LiteralPath $current) { $item = Get-Item -LiteralPath $current -Force; if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Refusing reparse-point path component: $current" } }
+        }
+        return $fullPath
+    }
+    function Resolve-PortalChildDestination {
+        param([string]$Directory, [string]$Name)
+        Assert-PortalChildName $Name
+        $root = Assert-NoReparsePathComponent $Directory
+        $destination = [IO.Path]::GetFullPath((Join-Path $root $Name)); $prefix = $root.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+        if (-not $destination.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "Refusing remote LocalState file name '$Name': destination escapes output directory." }
+        Assert-NoReparsePathComponent $destination | Out-Null
+        return $destination
+    }
+    function Pull-LocalStateDirectory {
+        param([string]$RemotePath, [string]$LocalPath, [int]$Depth)
+        if ($Depth -gt 32) { throw "LocalState directory nesting exceeds the safe limit at $RemotePath." }
+        $listUri = "$($DpSession.BaseUri)/api/filesystem/apps/files?knownfolderid=LocalAppData&packagefullname=$([Uri]::EscapeDataString($PackageFullName))&path=$([Uri]::EscapeDataString($RemotePath))"
+        $params = @{
+            Uri = $listUri; WebSession = $DpSession.Session; Method = 'Get'; Headers = @{ 'X-CSRF-Token' = $DpSession.CsrfToken }
+            ErrorAction = 'Stop'; TimeoutSec = 30
+        }
+        if ($SkipCertCheck) { $params['SkipCertificateCheck'] = $true }
+        $response = Invoke-RestMethod @params
+        $items = @(Get-PortalItemField $response 'Items')
+        $results = @()
+        foreach ($item in $items) {
+            $name = [string](Get-PortalItemField $item 'Name')
+            if (Test-PortalDirectory $item) {
+                $childRemotePath = "$RemotePath\$name"
+                $childLocalPath = Resolve-PortalChildDestination $LocalPath $name
+                New-Item -ItemType Directory -Path $childLocalPath -Force | Out-Null
+                $results += @(Pull-LocalStateDirectory $childRemotePath $childLocalPath ($Depth + 1))
+                continue
+            }
+            $fileUri = "$($DpSession.BaseUri)/api/filesystem/apps/file?knownfolderid=LocalAppData&packagefullname=$([Uri]::EscapeDataString($PackageFullName))&filename=$([Uri]::EscapeDataString($name))&path=$([Uri]::EscapeDataString($RemotePath))"
+            $dest = Resolve-PortalChildDestination $LocalPath $name
+            $partial = "$dest.partial-$([guid]::NewGuid().ToString('N'))"
+            $download = @{
+                Uri = $fileUri; WebSession = $DpSession.Session; Method = 'Get'; Headers = @{ 'X-CSRF-Token' = $DpSession.CsrfToken }
+                OutFile = $partial; ErrorAction = 'Stop'; TimeoutSec = 60
+            }
+            if ($SkipCertCheck) { $download['SkipCertificateCheck'] = $true }
+            try { Invoke-WebRequest @download | Out-Null; Move-Item -LiteralPath $partial -Destination $dest -Force }
+            finally { Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue }
+            $results += $dest
+        }
+        return $results
     }
 
     New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
-    $pulled = @()
-
-    foreach ($f in $files) {
-        $fileUri = "$($DpSession.BaseUri)/api/filesystem/apps/file?knownfolderid=LocalAppData&packagefullname=$([Uri]::EscapeDataString($PackageFullName))&filename=$([Uri]::EscapeDataString($f.Name))&path=%5CLocalState"
-        $dest = Join-Path $DestinationDir $f.Name
-        $dlParams = @{
-            Uri         = $fileUri
-            WebSession  = $DpSession.Session
-            Method      = 'Get'
-            Headers     = @{ 'X-CSRF-Token' = $DpSession.CsrfToken }
-            OutFile     = $dest
-            ErrorAction = 'Stop'
-            TimeoutSec  = 60
-        }
-        if ($SkipCertCheck) { $dlParams['SkipCertificateCheck'] = $true }
-        Invoke-WebRequest @dlParams | Out-Null
-        $pulled += $dest
-    }
-
+    $pulled = @(Pull-LocalStateDirectory '\LocalState' $DestinationDir 0)
+    if ($pulled.Count -eq 0) { Write-DeployLog 'No LocalState files found to pull.' -Level Warn }
     return $pulled
 }
 
@@ -602,7 +649,7 @@ function Save-DevicePortalScreenshot {
 
 function Write-DeploySummary {
     param(
-        [Parameter(Mandatory)] [hashtable]$Summary,
+        [Parameter(Mandatory)] [System.Collections.IDictionary]$Summary,
         [Parameter(Mandatory)] [string]$OutputDir
     )
     New-Item -ItemType Directory -Path $OutputDir -Force -ErrorAction SilentlyContinue | Out-Null
@@ -671,7 +718,7 @@ try {
     $summary.credentialSource = $dpCred.Source
     $skipCert = -not $RequireValidCertificate.IsPresent
 
-    Write-DeployLog "Authenticating to Device Portal at $($dpCred.ConsoleAddress) as $($dpCred.Username)..."
+    Write-DeployLog "Authenticating to Device Portal at $($dpCred.ConsoleAddress)..."
     $dp = New-DevicePortalSession -ConsoleAddress $dpCred.ConsoleAddress -Username $dpCred.Username -Password $dpCred.Password -SkipCertCheck $skipCert -TimeoutSec $RequestTimeoutSec
 
     Write-DeployLog "Installing $($artifact.Package.Name)..."
