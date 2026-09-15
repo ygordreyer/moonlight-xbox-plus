@@ -178,16 +178,23 @@ bool VideoRenderer::Render(AVFrame *frame) {
 			colorspace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
 		}
 
-		UINT colorSpaceSupport = 0;
-		if (colorspace && SUCCEEDED(m_deviceResources->GetSwapChain()->CheckColorSpaceSupport(colorspace, &colorSpaceSupport)) && (colorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT)) {
-			DX::ThrowIfFailed(m_deviceResources->GetSwapChain()->SetColorSpace1(colorspace));
-			Utils::Logf("Colorspace changed to %s\n",
+		// experiment/hdr-force-pq: apply directly instead of gating on CheckColorSpaceSupport.
+		// The transfer characteristic is cached only on success so a failed apply is retried
+		// next frame; the log is keyed on (request, HRESULT) so a repeating failure prints once.
+		HRESULT hr = m_deviceResources->GetSwapChain()->SetColorSpace1(colorspace);
+		if (SUCCEEDED(hr) || colorspace != m_LastColorSpaceRequested || hr != m_LastColorSpaceHr) {
+			Utils::Logf("SetColorSpace1(%s) returned 0x%08X\n",
 			            colorspace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
 			                ? "DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020"
-			                : "DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709");
+			                : "DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709",
+			            hr);
 		}
+		m_LastColorSpaceRequested = colorspace;
+		m_LastColorSpaceHr = hr;
 
-		m_LastColorTrc = frame->color_trc;
+		if (SUCCEEDED(hr)) {
+			m_LastColorTrc = frame->color_trc;
+		}
 	}
 
 #if defined(_DEBUG)

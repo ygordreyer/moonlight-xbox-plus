@@ -96,6 +96,10 @@ namespace moonlight_xbox_dx
 		AVColorSpace m_LastColorSpace = AVCOL_SPC_UNSPECIFIED;
 		AVChromaLocation m_LastChromaLocation = AVCHROMA_LOC_UNSPECIFIED;
 
+		// Last SetColorSpace1 request and its HRESULT; Render() logs each distinct outcome once
+		DXGI_COLOR_SPACE_TYPE m_LastColorSpaceRequested = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+		HRESULT m_LastColorSpaceHr = S_OK;
+
 		// Cache of SRVs over the ffmpeg decoder's array texture(s). Keyed by the
 		// underlying ID3D11Texture2D*; the inner vector is indexed by array slice,
 		// each holding the (luma, chroma) pair.
