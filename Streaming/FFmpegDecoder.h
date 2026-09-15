@@ -96,7 +96,11 @@ class FFMpegDecoder {
 	void CaptureWriteFrame(const CapturePacket &packet, uint32_t rtpTimestamp, bool isKeyFrame);
 	void CaptureClose();
 	void CaptureAbort();
+#if LIBAVFORMAT_VERSION_MAJOR >= 61
 	static int CaptureAvioWrite(void *opaque, const uint8_t *buf, int size);
+#else
+	static int CaptureAvioWrite(void *opaque, uint8_t *buf, int size);
+#endif
 
 	const AVCodec *decoder;
 	AVCodecContext *decoder_ctx;

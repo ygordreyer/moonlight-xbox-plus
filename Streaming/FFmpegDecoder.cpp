@@ -531,7 +531,11 @@ void FFMpegDecoder::DrainCaptureQueue() {
 }
 
 // ffmpeg writer
+#if LIBAVFORMAT_VERSION_MAJOR >= 61
 int FFMpegDecoder::CaptureAvioWrite(void* opaque, const uint8_t* buf, int size) {
+#else
+int FFMpegDecoder::CaptureAvioWrite(void* opaque, uint8_t* buf, int size) {
+#endif
 	auto* me = reinterpret_cast<FFMpegDecoder*>(opaque);
 	if (size <= 0) {
 		return 0;
