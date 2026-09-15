@@ -79,7 +79,7 @@ The standard sweep per experiment branch is rows A, B, C (PLAN 14.1). Extra rows
 | E | Row A with the Dev Home VRR toggle flipped | closed | Same as A | • Whether anything reaches the app<br>• the toggle's reach is UNCONFIRMED | • Same as A<br>• TV readout photo | • PLAN 8 Phase 2d<br>• PLAN 3.19 |
 | F | Row A with host `hdrBrightnessMode` manual 1690, one run only, restore 1000 afterwards | closed | Same as A | Whether the clipping point moves with the host's configured maximum | • Clipping onset<br>• record which value was active | PLAN 12 |
 | G | • 4K120 or 1080p120, content whose frame rate sits between fixed refresh rates (PLAN names 118, 112, 104, 117, 119 FPS)<br>• PLAN names no content, record what was used | closed | That content | TV refresh readout follows the stream rate rather than pinning at 120 | • Photograph of the TV's own readout per run<br>• on `experiment/vrr-allow-tearing` four runs, VRR on and off in App and Game | • PLAN 14.4<br>• PLAN 10 steps 4 and 5 |
-| H | Host at 60, 90, 120 FPS, App and Game, 5 minute stream, same content as the `main` fixes-only control | closed | Same content as the control run | Sustained queue depth growth or none | Frame interval mean and p99, queue depth mean and max, dropped frames per second from the pacing trace | • PLAN 11 measurement<br>• PLAN 14.5<br>• PLAN 16 rule 10 |
+| H | Host at 60, 90, 120 FPS, App and Game, 5 minute stream, same content as the `main` fixes-only control | closed | Same content as the control run | Sustained queue depth growth or none | Full pacing receipt fields from section 4, including maxima and actual window durations | • PLAN 11 measurement<br>• PLAN 14.5<br>• PLAN 16 rule 10 |
 | I | Row A with a second Moonlight client on the same host and TV | closed | Same as A | Side-by-side match | Photo of both | PLAN 14.3 item 9 |
 
 ### 3.2 Steps for one run
@@ -118,7 +118,7 @@ Lines to quote verbatim into the entry:
 | Every `SetDisplayHDR` transition with the before and after `HdmiDisplayMode` | • 14.3 item 6<br>• H6 at stream end | • PLAN 8 Phase 1d<br>• PLAN 14.3 |
 | Every `ResizeBuffers` and `HandleDeviceLost`, with the `SetColorSpace1` line that follows | 14.3 item 3 | • PLAN 8 Phase 1d<br>• PLAN 14.3 |
 | Stream start and stop with negotiated `colorSpace` and `colorRange`, and the app's resource mode if logged | Reproducibility of the entry | • PLAN 8 Phase 1d<br>• PLAN 16 rule 27 |
-| Pacing trace lines, one per second: mean and p99 frame interval, queue depth mean and max, frames dropped in the interval, measured vblank interval | Entry fields "Frame interval mean / p99" and "Frames dropped in 60 s" (sum of 60 consecutive lines) | • PLAN 11 measurement<br>• PLAN 14.2 |
+| Pacing trace windows: `win_ms`, interval mean/p99/max/`n`, repeats/misses, drops, queue mean/max, vblank interval | • Compare matched windows<br>• Normalize drops by actual elapsed time, never by a presumed 60 lines<br>• Flag empty windows, overflow, and missing logs | • PLAN 11 measurement<br>• PLAN 14.2 |
 | Any error HRESULT | 14.3 item 10 | PLAN 14.3 |
 | Host: the negotiated colorspace line, quoted as printed, and the `hdrBrightnessMode` in effect | • PLAN 9 step 2 warns the literal string is unknown<br>• PLAN 12 wants both values recorded | • PLAN 9<br>• PLAN 12 |
 
@@ -147,8 +147,8 @@ Append one block per console run to `docs/TEST-RESULTS.md` on the branch under t
 - Host log lines (verbatim):
 - TV refresh readout: <value> (photo: <filename>)
 - Clipping onset: <nits> (measurement method: <how>)
-- Frame interval mean / p99: <ms> / <ms>
-- Frames dropped in 60 s: <n>
+- Pacing windows: win_ms=<ms>, mean/p99/max/n=<...>, repeats=<n>, misses=<n>, queue=<mean>/<max>, drops=<n> over actual elapsed <ms>
+- Pacing flags: <empty window / overflow / missing log, or none>
 
 ### Verdict
 - H<n>: <confirmed|refuted|inconclusive>
@@ -199,9 +199,10 @@ Check a box only when this run measured it; anything unchecked that the run did 
 
 ### 5.3 Pacing (PLAN 14.5)
 
-- [ ] p99 frame interval within 10 percent of the mean across a 5 minute stream.
-- [ ] No sustained queue depth growth across the same window.
-- [ ] Dropped-frame count not worse than `main` at the fixes-only commit on the same content.
+- [ ] Compare matched 5-minute runs by per-window mean, p99, max, `n`, `win_ms`, repeats, misses, queue growth, and drops per actual elapsed time. Do not combine window p99 values.
+- [ ] Count windows over the predefined interval threshold. Flag empty windows, overflow, and missing logs.
+- [ ] No sustained queue growth and no worse drop rate, repeats, misses or affected-window count than the matched control. A pacing treatment improves interval maxima, affected-window count or drop rate.
+- [ ] A Present(1, 0) causal blocking claim needs duration telemetry; existing traces can compare outcomes.
 
 ## 6. End of session
 

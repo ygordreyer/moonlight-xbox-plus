@@ -636,10 +636,10 @@ From `FramePacingController.kt`, the algorithm only. The Kotlin and MediaCodec s
 
 ### Measurement, which comes before any change
 
-- Add a pacing trace to the phase 1 file logger: one line per second, not per frame, carrying mean and p99 frame interval, queue depth mean and max, frames dropped in the interval, and the measured vblank interval.
+- Add a pacing trace with per-window `win_ms`, new-frame Present-start interval mean, p99, max and `n`; repeats, misses, drops, queue mean/max and measured vblank interval. It flushes after a Present or a no-frame iteration, plus once at shutdown. These are Present-call start intervals, not scanout times or Present duration.
 - Establish the baseline on `main` at the fixes-only commit, untouched by any pacing experiment, before touching `Pacer.cpp` (section 5's branch rules, section 16 rule 10).
 - Test at 60, 90, 120 FPS host settings (the host's configured fps list is `[59.94, 60, 90, 120, 144]`), and in both App and Game resource mode, because phase 2c may show that pacing is partly a resource problem.
-- Branch `feature/vplus-pacer`. Accept a change only when the trace shows a measured improvement in p99 frame interval or dropped-frame count. An impression of smoothness is not a result.
+- Branch `feature/vplus-pacer`. Compare matched 5-minute runs as collections of windows: maximum interval, number of windows above a predefined interval threshold, repeats, misses, drops normalized by actual elapsed time, and queue growth. Do not average per-window p99 values into a five-minute p99. Flag empty windows, sample overflow, and missing logs. An impression of smoothness is not a result.
 
 ---
 
@@ -712,8 +712,8 @@ Each branch carries its own. Append, never rewrite. One block per console run.
 - Host log lines (verbatim):
 - TV refresh readout: <value> (photo: <filename>)
 - Clipping onset: <nits> (measurement method: <how>)
-- Frame interval mean / p99: <ms> / <ms>
-- Frames dropped in 60 s: <n>
+- Pacing windows: win_ms=<ms>, mean/p99/max/n=<...>, repeats=<n>, misses=<n>, queue=<mean>/<max>, drops=<n> over actual elapsed <ms>
+- Pacing flags: <empty window / overflow / missing log, or none>
 
 ### Verdict
 - H<n>: <confirmed|refuted|inconclusive>
@@ -747,9 +747,11 @@ The "Untested in this run" block is mandatory and must not be empty. A run alway
 
 ### 14.5 Pacing acceptance criteria
 
-- p99 frame interval within 10 percent of the mean across a 5 minute stream.
-- No sustained queue depth growth across the same window.
-- Dropped-frame count not worse than `main` at the fixes-only commit on the same content.
+- Compare matched 5-minute runs by each window's mean, p99, max, `n`, `win_ms`, repeats and misses. At 60 samples nearest-rank p99 is the maximum; at 120 it excludes one worst sample, so neither is a five-minute p99.
+- No sustained queue growth and no increase in affected windows above the predefined interval threshold.
+- Drops per actual elapsed time, repeats, and misses are not worse than `main`; flag empty windows, overflow, or missing logs.
+- Accept a pacing treatment only with a measured improvement in interval maxima, affected-window count or drop rate, while meeting the no-regression checks above. Choose the interval threshold before either comparison run.
+- A `Present(1, 0)` experiment needs duration telemetry before it can claim causal blocking. Existing interval telemetry can still compare outcomes.
 
 ---
 
